@@ -43,7 +43,7 @@ class LocalUpdate(object):
 
         return trainloader
 
-    def update_weights(self, idx, model, global_round):
+    def update_weights(self,args, idx, model, global_round):
         # Set mode to train model
         model.train()
         epoch_loss = []
@@ -146,13 +146,16 @@ class LocalUpdate(object):
         elif self.args.optimizer == 'adam':
             optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr,
                                          weight_decay=1e-4)
-
+        print(f"Trainloader length: {len(self.trainloader)}")
         for iter in range(self.args.train_ep):
             batch_loss = {'total':[],'1':[], '2':[], '3':[]}
             agg_protos_label = {}
+
             for batch_idx, (images, label_g) in enumerate(self.trainloader):
                 images, labels = images.to(self.device), label_g.to(self.device)
-
+                # Print shapes to debug
+                #print(f"Batch {batch_idx} - images shape: {images.shape}")
+                #print(f"Batch {batch_idx} - labels shape: {labels.shape}")
                 # loss1: cross-entrophy loss, loss2: proto distance loss
                 model.zero_grad()
                 log_probs, protos = model(images)
@@ -171,6 +174,12 @@ class LocalUpdate(object):
                     loss2 = loss_mse(proto_new, protos)
 
                 loss = loss1 + loss2 * args.ld
+                # Debug prints
+                """print(f"Batch Index: {batch_idx}, Iteration: {iter}")
+                print(f"loss1: {loss1.item()}, loss2: {loss2.item()}, combined loss: {loss.item()}")
+                print(f"labels: {labels}, log_probs: {log_probs}, protos: {protos}")"""
+                #print(f"proto_new: {proto_new}, global_protos: {global_protos}")
+
                 loss.backward()
                 optimizer.step()
 
@@ -203,6 +212,113 @@ class LocalUpdate(object):
         epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
 
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
+
+
+
+
+    def update_weights_het_semi(self, args, idx, global_protos, model, global_round=0):
+        # Set mode to train model
+        model.train()
+        epoch_loss = {'total': [], '1': [], '2': [], '3': []}
+
+        # Set optimizer for the local updates
+        if self.args.optimizer == 'sgd':
+            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=0.5)
+        elif self.args.optimizer == 'adam':
+            optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr, weight_decay=1e-4)
+
+        print(f"Trainloader length: {len(self.trainloader)}")
+        for iter in range(self.args.train_ep):
+            batch_loss = {'total': [], '1': [], '2': [], '3': []}
+            agg_protos_label = {}
+
+            for batch_idx, (images, label_g) in enumerate(self.trainloader):
+                images, labels = images.to(self.device), label_g.to(self.device)
+
+                # Separate labeled and unlabeled data
+                labeled_mask = labels != -1
+                unlabeled_mask = labels == -1
+
+                if labeled_mask.sum() > 0:
+                    labeled_images = images[labeled_mask]
+                    labeled_labels = labels[labeled_mask]
+
+                if unlabeled_mask.sum() > 0:
+                    unlabeled_images = images[unlabeled_mask]
+
+                model.zero_grad()
+
+                if labeled_mask.sum() > 0:
+                    log_probs_labeled, protos_labeled = model(labeled_images)
+                    loss1 = self.criterion(log_probs_labeled, labeled_labels)
+                else:
+                    loss1 = 0
+
+                if unlabeled_mask.sum() > 0:
+                    with torch.no_grad():
+                        log_probs_unlabeled, _ = model(unlabeled_images)
+                        pseudo_labels = log_probs_unlabeled.max(1)[1]
+
+                    log_probs_unlabeled, protos_unlabeled = model(unlabeled_images)
+                    loss_pseudo = self.criterion(log_probs_unlabeled, pseudo_labels)
+                else:
+                    loss_pseudo = 0
+
+                loss_mse = nn.MSELoss()
+                if len(global_protos) == 0:
+                    loss2 = 0
+                else:
+                    if labeled_mask.sum() > 0:
+                        proto_new = copy.deepcopy(protos_labeled.data)
+                        i = 0
+                        for label in labeled_labels:
+                            if label.item() in global_protos.keys():
+                                proto_new[i, :] = global_protos[label.item()][0].data
+                            i += 1
+                        loss2 = loss_mse(proto_new, protos_labeled)
+                    else:
+                        loss2 = 0
+
+                loss = loss1 + loss_pseudo + loss2 * args.ld
+
+                loss.backward()
+                optimizer.step()
+
+                if labeled_mask.sum() > 0:
+                    for i in range(len(labeled_labels)):
+                        if labeled_labels[i].item() in agg_protos_label:
+                            agg_protos_label[labeled_labels[i].item()].append(protos_labeled[i, :])
+                        else:
+                            agg_protos_label[labeled_labels[i].item()] = [protos_labeled[i, :]]
+
+                    log_probs_labeled = log_probs_labeled[:, 0:args.num_classes]
+                    _, y_hat_labeled = log_probs_labeled.max(1)
+                    acc_val = torch.eq(y_hat_labeled, labeled_labels.squeeze()).float().mean()
+                else:
+                    acc_val = 0
+
+                if self.args.verbose and (batch_idx % 10 == 0):
+                    print('| Global Round : {} | User: {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.3f} | Acc: {:.3f}'.format(
+                        global_round, idx, iter, batch_idx * len(images),
+                        len(self.trainloader.dataset),
+                        100. * batch_idx / len(self.trainloader),
+                        loss.item(),
+                        acc_val.item()))
+
+                batch_loss['total'].append(loss.item())
+                batch_loss['1'].append(loss1.item() if labeled_mask.sum() > 0 else 0)
+                batch_loss['2'].append(loss2.item() if labeled_mask.sum() > 0 else 0)
+
+            epoch_loss['total'].append(sum(batch_loss['total']) / len(batch_loss['total']))
+            epoch_loss['1'].append(sum(batch_loss['1']) / len(batch_loss['1']))
+            epoch_loss['2'].append(sum(batch_loss['2']) / len(batch_loss['2']))
+
+        epoch_loss['total'] = sum(epoch_loss['total']) / len(epoch_loss['total'])
+        epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
+        epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
+
+        return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
+
 
     def inference(self, model):
         """ Returns the inference accuracy and loss.
@@ -297,7 +413,7 @@ def test_inference(args, model, test_dataset, global_protos):
 
     device = args.device
     criterion = nn.NLLLoss().to(device)
-    testloader = DataLoader(test_dataset, batch_size=128,
+    testloader = DataLoader(test_dataset, batch_size=args.local_bs,
                             shuffle=False)
 
     for batch_idx, (images, labels) in enumerate(testloader):
@@ -413,7 +529,7 @@ def test_inference_new_het(args, local_model_list, test_dataset, global_protos=[
     loss_mse = nn.MSELoss()
 
     device = args.device
-    testloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    testloader = DataLoader(test_dataset, batch_size=args.local_bs, shuffle=False)
 
     cnt = 0
     for batch_idx, (images, labels) in enumerate(testloader):
@@ -433,9 +549,9 @@ def test_inference_new_het(args, local_model_list, test_dataset, global_protos=[
         ensem_proto /= len(protos_list)
 
         a_large_num = 100
-        outputs = a_large_num * torch.ones(size=(images.shape[0], 10)).to(device)  # outputs 64*10
+        outputs = a_large_num * torch.ones(size=(images.shape[0], args.num_classes)).to(device)  # outputs 64*10
         for i in range(images.shape[0]):
-            for j in range(10):
+            for j in range(args.num_classes):
                 if j in global_protos.keys():
                     dist = loss_mse(ensem_proto[i,:],global_protos[j][0])
                     outputs[i,j] = dist
@@ -498,8 +614,9 @@ def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list
                 a_large_num = 100
                 dist = a_large_num * torch.ones(size=(images.shape[0], args.num_classes)).to(device)  # initialize a distance matrix
                 for i in range(images.shape[0]):
+                    #print("len classes list in test inf",len(classes_list))
                     for j in range(args.num_classes):
-                        if j in global_protos.keys() and j in classes_list[idx]:
+                        if j in global_protos.keys(): # and j in classes_list[idx]:
                             d = loss_mse(protos[i, :], global_protos[j][0])
                             dist[i, j] = d
 

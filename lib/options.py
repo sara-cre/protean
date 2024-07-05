@@ -11,13 +11,13 @@ def args_parser():
     # federated arguments (Notation for the arguments followed from paper)
     parser.add_argument('--rounds', type=int, default=100,
                         help="number of rounds of training")
-    parser.add_argument('--num_users', type=int, default=20,
+    parser.add_argument('--num_users', type=int, default=2,
                         help="number of users: K")
     parser.add_argument('--frac', type=float, default=0.04,
                         help='the fraction of clients: C')
     parser.add_argument('--train_ep', type=int, default=1,
                         help="the number of local episodes: E")
-    parser.add_argument('--local_bs', type=int, default=4,
+    parser.add_argument('--local_bs', type=int, default=64,
                         help="local batch size: B")
     parser.add_argument('--lr', type=float, default=0.01,
                         help='learning rate')
@@ -47,7 +47,7 @@ def args_parser():
                         of classes")
     parser.add_argument('--gpu', default=0, help="To use cuda, set \
                         to a specific GPU ID. Default set to use CPU.")
-    parser.add_argument('--optimizer', type=str, default='sgd', help="type \
+    parser.add_argument('--optimizer', type=str, default='adam', help="type \
                         of optimizer")
     parser.add_argument('--iid', type=int, default=0,
                         help='Default set to IID. Set to 0 for non-IID.')
@@ -68,5 +68,9 @@ def args_parser():
     parser.add_argument('--stdev', type=int, default=2, help="stdev of ways")
     parser.add_argument('--ld', type=float, default=1, help="weight of proto loss")
     parser.add_argument('--ft_round', type=int, default=10, help="round of fine tuning")
+    parser.add_argument('--loss', type=str, default='sparse_categorical_crossentropy', help="training loss function")
+    parser.add_argument('--semi', type=float, default=0.0, help="ratio of unlabeled data")
+    
+    
     args = parser.parse_args()
     return args

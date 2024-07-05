@@ -131,3 +131,39 @@ class Lenet(nn.Module):
         x = self.fc3(x)
 
         return F.log_softmax(x, dim=1), x1
+
+class CustomCNN(nn.Module):
+    def __init__(self, args):
+        super(CustomCNN, self).__init__()
+        num_features = args.num_features
+        num_instances = args.num_classes
+        if args.dataset == 'ciciot':
+            feature_map = 9
+        elif args.dataset == '5gnidd':
+            feature_map = 6
+        else:
+            feature_map = 16
+        self.reshape_layer = nn.Identity()  # No reshape needed as PyTorch will handle the shape during forward pass
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=64, kernel_size=5)
+        self.maxpool1 = nn.MaxPool1d(kernel_size=2)
+        self.dropout1 = nn.Dropout(0.2)
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3)
+        self.maxpool2 = nn.MaxPool1d(kernel_size=2)
+        self.flatten = nn.Flatten()
+        self.dense1 = nn.Linear(128 * feature_map, 128)  # Adjust in_features based on the input size after convolutions
+        self.dropout2 = nn.Dropout(0.5)
+        self.dense2 = nn.Linear(128, num_instances)
+
+    def forward(self, x):
+        x = x.view(x.size(0), 1, -1)  # Reshape to (batch_size, 1, num_features)
+        x = F.relu(self.conv1(x))
+        x = self.maxpool1(x)
+        x = self.dropout1(x)
+        x = F.relu(self.conv2(x))
+        x = self.maxpool2(x)
+        x = self.flatten(x)
+        x1 = F.relu(self.dense1(x))  # Save intermediate output x1
+        x = self.dropout2(x1)
+        x = self.dense2(x)
+
+        return F.log_softmax(x, dim=1), x1 

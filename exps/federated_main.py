@@ -21,9 +21,61 @@ if str(mod_dir) not in sys.path:
 
 from resnet import resnet18
 from options import args_parser
-from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt
-from models import CNNMnist, CNNFemnist
-from utils import get_dataset, average_weights, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem
+from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference
+from models import CNNMnist, CNNFemnist, CustomCNN
+from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem
+from plot import plot_fl_accuracies, plot_fedproto_accuracies
+import time
+import time
+
+def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list):
+    timestamp = time.time()
+    filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{timestamp}.txt'
+
+    # Open the file using the created file name
+    accuracies_file = open(filename, 'w')
+    idxs_users = np.arange(args.num_users)
+
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    for round in tqdm(range(args.rounds)):
+        local_weights, local_losses, local_accs = [], [], []
+        print(f'\n | Global Training Round : {round + 1} |\n')
+
+
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
+            w, loss, acc = local_model.update_weights(args, idx, model=copy.deepcopy(global_model), global_round=round)
+            
+
+            local_weights.append(copy.deepcopy(w))
+            local_losses.append(copy.deepcopy(loss))
+            local_accs.append(copy.deepcopy(acc))
+
+        global_weights = average_weights_(local_weights)
+        # update global weights
+
+        
+        global_model_ = copy.deepcopy(global_model)
+        global_model_.load_state_dict(global_weights, strict=True)
+        global_model = global_model_
+        #local_model_list[idx] = local_model
+
+
+
+        loss_avg = sum(local_losses) / len(local_losses)
+        train_loss.append(loss_avg)
+        global_protos = []
+        acc, loss = test_inference(args, global_model, test_dataset, global_protos)
+        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accuracies.append(acc)
+    accuracies_file.write(str(accuracies))
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    plot_fl_accuracies(filename)
 
 model_urls = {
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -35,7 +87,11 @@ model_urls = {
 
 def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
-
+    timestamp = time.time()
+    filename_wo = f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{timestamp}.txt'
+    filename_w = f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{time}.txt'
+    accuracies_file_wo = open (filename_wo, 'w') #open(f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')
+    accuracies_file_w = open(filename_w, 'w') #open(f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')
     global_protos = []
     idxs_users = np.arange(args.num_users)
 
@@ -48,7 +104,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         proto_loss = 0
         for idx in idxs_users:
             local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
-            w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            if args.semi == 0:
+                w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            else:
+                w, loss, acc, protos = local_model.update_weights_het_semi(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round   )
             agg_protos = agg_func(protos)
 
             local_weights.append(copy.deepcopy(w))
@@ -73,15 +132,30 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
-
-    acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
-    print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
-    print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
-    print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+        acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+        print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+        print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+        print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+        accuracies_file_wo.write(str(acc_list_l))
+        accuracies_file_w.write(str(acc_list_g))
+        accuracies_file_wo.write('\n')
+        accuracies_file_w.write('\n')
+    for idx in idxs_users:
+        acc, loss = test_inference(args, local_model_list[idx], test_dataset, global_protos)
+        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        acc = test_inference_new_het(args, local_model_list, test_dataset,global_protos)
+        print('For all users, mean of test acc is {:.5f}'.format(acc))
 
     # save protos
     if args.dataset == 'mnist':
         save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    
+    accuracies_file_wo.close()
+    accuracies_file_w.close()
+    plot_fedproto_accuracies(filename_wo)
+    plot_fedproto_accuracies(filename_w)
+
 
 def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_mh_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
@@ -124,7 +198,7 @@ def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_gro
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
-
+    
     acc_list_l, acc_list_g = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
     print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
     print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
@@ -145,7 +219,15 @@ if __name__ == '__main__':
         torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
-
+    if args.dataset == 'ciciot':
+        args.num_features = 46
+        args.num_classes = 8
+    elif args.dataset == 'xiiotid':
+        args.num_features = 74
+        args.num_classes = 10
+    elif args.dataset == '5gnidd':
+        args.num_features = 34
+        args.num_classes = 7
     # load dataset and user groups
     n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
     if args.dataset == 'mnist':
@@ -155,6 +237,8 @@ if __name__ == '__main__':
     elif args.dataset =='cifar100':
         k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
     elif args.dataset == 'femnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
 
     train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
@@ -204,12 +288,50 @@ if __name__ == '__main__':
                     initial_weight[key] = initial_weight_1[key]
 
             local_model.load_state_dict(initial_weight)
-
+        elif args.dataset == 'ciciot':
+            args.num_features = 46
+            args.num_classes = 8
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'xiiotid':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == '5gnidd':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
         local_model.to(args.device)
         local_model.train()
         local_model_list.append(local_model)
+        global_model.to(args.device)
+        global_model.train()
 
-    if args.mode == 'task_heter':
+    unique_labels = set(range(args.num_classes))
+    # Save classes distribution between clients
+    classes_distribution = []
+    for idx, user in user_groups.items():
+        user_classes = {}
+        for data_idx in user:
+            label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+            if label not in user_classes:
+                user_classes[label] = 0
+            user_classes[label] += 1
+        classes_distribution.append((idx, user_classes))
+
+    # Print classes_distribution for debugging
+    print(classes_distribution)
+
+    # Save classes distribution to a file
+    #file_path = '../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt'
+    #with open(file_path, 'w') as f:
+    with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+        for idx, user_classes in classes_distribution:
+            f.write(f"User {idx}:\n")
+            for label, count in user_classes.items():
+                f.write(f"  Class {label}: {count} instances\n")
+            f.write("\n")
+    """if args.mode == 'task_heter':
         FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)
     else:
-        FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)
+        FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)"""
+    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)

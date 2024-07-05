@@ -613,6 +613,153 @@ def cifar100_noniid_lt(test_dataset, num_users, classes_list):
     #             (dict_users[i], idxs[rand*num_imgs:(rand+1)*num_imgs]), axis=0)
     # return dict_users
 
+def xiiotid_iid(dataset, num_users):
+    """
+    Sample I.I.D. client data from CIFAR10 dataset
+    :param dataset:
+    :param num_users:
+    :return: dict of image index
+    """
+    num_classes = len(np.unique(dataset.targets))
+    num_items = int(len(dataset)/num_users)
+    classes_list = []
+    #n = list(range(num_classes))
+    dict_users, all_idxs = {}, [i for i in range(len(dataset))]
+    for i in range(num_users):
+        classes = np.arange(num_classes) #random.sample(range(0,num_classes), n)
+        #classes = np.sort(classes)
+        dict_users[i] = set(np.random.choice(all_idxs, num_items,
+                                             replace=False))
+        all_idxs = list(set(all_idxs) - dict_users[i])
+        classes_list.append(classes)
+    return dict_users, classes_list
+
+def xiiotid_noniid(args, dataset, num_users, n_list, k_list):
+    # 60,000 training imgs -->  200 imgs/shard X 300 shards
+    num_instances = dataset.__len__()
+    num_classes = len(np.unique(dataset.targets)) #10
+    num_shards, num_imgs = num_classes, num_instances // num_classes
+    idx_shard = [i for i in range(num_shards)]
+    dict_users = {}
+    idxs = np.arange(num_shards*num_imgs)
+    if isinstance(dataset.labels, np.ndarray):
+        labels = dataset.labels
+    else:
+        labels = dataset.labels.numpy()
+    min_length = min(len(idxs), len(labels))
+    idxs = idxs[:min_length]
+    labels = labels[:min_length]
+    # sort labels
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    idxs = idxs_labels[0, :]
+    label_begin = {}
+    cnt=0
+    for i in idxs_labels[1,:]:
+        if i not in label_begin:
+                label_begin[i] = cnt
+        cnt+=1
+
+    classes_list = []
+    for i in range(num_users):
+        n = n_list[i]
+        k = k_list[i]
+        k_len = args.train_shots_max
+        classes = random.sample(range(0,args.num_classes), n)
+        classes = np.sort(classes)
+        print("user {:d}: {:d}-way {:d}-shot".format(i + 1, n, k))
+        print("classes:", classes)
+        user_data = np.array([])
+        for each_class in classes:
+            # begin = i*10 + label_begin[each_class.item()]
+            begin = i * k_len + label_begin[each_class.item()]
+            user_data = np.concatenate((user_data, idxs[begin : begin+k]),axis=0)
+        dict_users[i] = user_data
+        classes_list.append(classes)
+
+    return dict_users, classes_list
+
+def xiiotid_noniid_lt(args, test_dataset, num_users, n_list, k_list, classes_list):
+
+    # 60,000 training imgs -->  200 imgs/shard X 300 shards
+    num_instances = test_dataset.__len__()
+    num_classes = 10
+    num_shards, num_imgs = 10, num_instances // num_classes
+    idx_shard = [i for i in range(num_shards)]
+    dict_users = {}
+    idxs = np.arange(num_shards*num_imgs)
+    if isinstance(test_dataset.labels, np.ndarray):
+        labels = test_dataset.labels
+    else:
+        labels = test_dataset.labels.numpy()
+    min_length = min(len(idxs), len(labels))
+    idxs = idxs[:min_length]
+    labels = labels[:min_length]
+    # sort labels
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    idxs = idxs_labels[0, :]
+    label_begin = {}
+    cnt=0
+    for i in idxs_labels[1,:]:
+        if i not in label_begin:
+                label_begin[i] = cnt
+        cnt+=1
+    
+    for i in range(num_users):
+        k = 1000#40 # How many images should be selected for each class for testing
+        classes = classes_list[i]
+        print("local test classes:", classes)
+        user_data = np.array([])
+        for each_class in classes:
+            k = min(k, np.sum(labels == each_class.item()))
+            begin = i * k + label_begin[each_class.item()]
+            user_data = np.concatenate((user_data, idxs[begin : begin+k]),axis=0)
+        dict_users[i] = user_data
+
+
+    return dict_users
+
+def xiotid_noniid_lt_all(args, test_dataset, num_users):
+    # Number of instances and classes
+    num_instances = test_dataset.__len__()
+    num_classes = 10  # Assuming 10 classes
+    
+    # Generate indices for the entire dataset
+    idxs = np.arange(num_instances)
+    
+    if isinstance(test_dataset.labels, np.ndarray):
+        labels = test_dataset.labels
+    else:
+        labels = test_dataset.labels.numpy()
+    
+    min_length = min(len(idxs), len(labels))
+    idxs = idxs[:min_length]
+    labels = labels[:min_length]
+    
+    # Sort indices based on labels
+    idxs_labels = np.vstack((idxs, labels))
+    idxs_labels = idxs_labels[:, idxs_labels[1, :].argsort()]
+    idxs = idxs_labels[0, :]
+    label_begin = {}
+    cnt = 0
+    for i in idxs_labels[1, :]:
+        if i not in label_begin:
+            label_begin[i] = cnt
+        cnt += 1
+
+    dict_users = {i: np.array([], dtype=int) for i in range(num_users)}
+    num_items_per_user = num_instances // num_users
+
+    for i in range(num_users):
+        user_data = np.array([], dtype=int)
+        for j in range(num_classes):
+            class_idxs = idxs_labels[0, idxs_labels[1, :] == j]
+            num_class_items_per_user = len(class_idxs) // num_users
+            user_data = np.concatenate((user_data, class_idxs[i * num_class_items_per_user:(i + 1) * num_class_items_per_user]), axis=0)
+        dict_users[i] = user_data
+
+    return dict_users
 
 
 if __name__ == '__main__':

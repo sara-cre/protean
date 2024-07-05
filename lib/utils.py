@@ -7,8 +7,9 @@ import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal, mnist_noniid_lt
 from sampling import femnist_iid, femnist_noniid, femnist_noniid_unequal, femnist_noniid_lt
-from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt
+from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all
 import femnist
+from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data
 import numpy as np
 
 trans_cifar10_train = transforms.Compose([transforms.RandomCrop(32, padding=4),
@@ -122,8 +123,40 @@ def get_dataset(args, n_list, k_list):
                 # Chose euqal splits for every user
                 user_groups, classes_list = cifar100_noniid(args, train_dataset, args.num_users, n_list, k_list)
                 user_groups_lt = cifar100_noniid_lt(test_dataset, args.num_users, classes_list)
-
+    elif args.dataset == 'xiiotid' or args.dataset == '5gnidd' or args.dataset == 'ciciot':
+        if args.dataset == '5gnidd':
+            train_dataset, test_dataset = load_data_5g_nidd(args)
+        elif args.dataset == 'ciciot':
+            train_dataset, test_dataset = load_data_cic_iot(args)
+        elif args.dataset == 'xiiotid':
+            train_dataset, test_dataset = load_data_x_iiotid(args)
+        if args.iid:
+            user_groups, classes_list = xiiotid_iid(train_dataset, args.num_users)
+            user_groups_lt = mnist_iid(test_dataset, args.num_users)
+            classes_list_gt = classes_list
+        else:
+            if args.unequal:
+                raise NotImplementedError()
+            else:
+                user_groups, classes_list = xiiotid_noniid(args, train_dataset, args.num_users, n_list, k_list)
+                #user_groups_lt = xiiotid_noniid_lt(args, test_dataset, args.num_users, n_list, k_list, classes_list)
+                user_groups_lt = xiotid_noniid_lt_all(args,test_dataset, args.num_users)
+                classes_list_gt = classes_list
+        #user_groups = mnist_iid(train_dataset, args.num_users)
+        #user_groups_lt = user_groups
+        #classes_list, classes_list_gt = [], []
     return train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt
+def average_weights_(w):
+    """
+    Returns the average of the weights.
+    """
+    w_avg = copy.deepcopy(w[0])  # Initialize with the first model's weights
+    for key in w_avg.keys():
+        if key[0:4] != '....':
+            for i in range(1, len(w)):
+                w_avg[key] += w[i][key]
+            w_avg[key] = torch.div(w_avg[key], len(w))
+    return w_avg  # Return a single dictionary
 
 def average_weights(w):
     """
