@@ -21,7 +21,7 @@ if str(mod_dir) not in sys.path:
 
 from resnet import resnet18
 from options import args_parser
-from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference
+from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack
 from models import CNNMnist, CNNFemnist, CustomCNN
 from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem
 from plot import plot_fl_accuracies, plot_fedproto_accuracies
@@ -85,7 +85,33 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
-def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list):
+def aggregate_mapping_layers(local_weights):
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    for key in aggregated_weights.keys():
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    return aggregated_weights
+def verify_mapping_layers_among_clients(models):
+    reference_weights = models[0].state_dict()
+    for idx, model in enumerate(models[1:], start=1):
+        model_weights = model.state_dict()
+        for key in ['conv1.weight', 'conv1.bias', 'conv2.weight', 'conv2.bias', 'dense1.weight', 'dense1.bias']:
+            if not torch.equal(reference_weights[key], model_weights[key]):
+                print(f'Discrepancy found between model 1 and model {idx + 1} for layer {key}')
+                return False
+    print('All mapping layers are identical across clients.')
+    return True
+
+def aggregate_weights(local_weights):
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    for key in aggregated_weights.keys():
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    return aggregated_weights
+
+def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none'):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
     timestamp = time.time()
     filename_wo = f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{timestamp}.txt'
@@ -96,19 +122,19 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     idxs_users = np.arange(args.num_users)
 
     train_loss, train_accuracy = [], []
+    global_model = copy.deepcopy(local_model_list[0])
 
     for round in tqdm(range(args.rounds)):
-        local_weights, local_losses, local_protos = [], [], {}
+        local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
         print(f'\n | Global Training Round : {round + 1} |\n')
 
         proto_loss = 0
         for idx in idxs_users:
             local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
-            if args.semi == 0:
-                w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
-            else:
-                w, loss, acc, protos = local_model.update_weights_het_semi(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round   )
+            
+            w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
             agg_protos = agg_func(protos)
+
 
             local_weights.append(copy.deepcopy(w))
             local_losses.append(copy.deepcopy(loss['total']))
@@ -118,21 +144,78 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             summary_writer.add_scalar('Train/Loss2/user' + str(idx + 1), loss['2'], round)
             summary_writer.add_scalar('Train/Acc/user' + str(idx + 1), acc, round)
             proto_loss += loss['2']
+            mapping_layers_weights = {k: v for k, v in w.items() if 'conv1' in k or 'conv2' in k or 'dense1' in k}
+            local_mapping_weights.append(copy.deepcopy(mapping_layers_weights))
 
-        # update global weights
-        local_weights_list = local_weights
 
+        """# Aggregate mapping layers
+        global_mapping_weights = aggregate_weights(local_weights) #aggregate_mapping_layers(local_mapping_weights)
+
+        # Update local models' mapping layers with aggregated weights
         for idx in idxs_users:
-            local_model = copy.deepcopy(local_model_list[idx])
-            local_model.load_state_dict(local_weights_list[idx], strict=True)
-            local_model_list[idx] = local_model
+            local_model = local_model_list[idx]
+            model_state_dict = local_model.state_dict()
+            model_state_dict.update(global_mapping_weights)
+            local_model.load_state_dict(model_state_dict, strict=False)
+            local_model_list[idx] = local_model"""
+        if aggregated == 'none':
+            local_weights_list = local_weights
+
+            for idx in idxs_users:
+                local_model = copy.deepcopy(local_model_list[idx])
+                local_model.load_state_dict(local_weights_list[idx], strict=True)
+                local_model_list[idx] =  local_model
+        elif aggregated == 'mapping_layers':
+            print('Aggregating mapping layers')
+            # Aggregate mapping layers
+            global_mapping_weights = aggregate_mapping_layers(local_mapping_weights)
+
+            # Update local models' mapping layers with aggregated weights
+            for idx in idxs_users:
+                local_model = local_model_list[idx]
+                model_state_dict = local_model.state_dict()
+                model_state_dict.update(global_mapping_weights)
+                local_model.load_state_dict(model_state_dict, strict=False)
+                local_model_list[idx] = local_model
+        elif aggregated == 'all_layers':
+
+            global_weights = average_weights_(local_weights)
+            # update global weights
+
+            
+            global_model_ = copy.deepcopy(global_model)
+            global_model_.load_state_dict(global_weights, strict=True)
+            global_model = global_model_
+            # update global weights
+            local_weights_list = local_weights
+
+            for idx in idxs_users:
+                local_model = copy.deepcopy(global_model)
+                local_model.load_state_dict(local_weights_list[idx], strict=True)
+                local_model_list[idx] = global_model #local_model
 
         # update global weights
         global_protos = proto_aggregation(local_protos)
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
-        acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+    # Verify that all clients have the same mapping layers
+    if not verify_mapping_layers_among_clients(local_model_list):
+        print('Mismatch found in mapping layers among clients.')
+    else:
+        print('All clients have identical mapping layers.')
+    acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+    print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+    print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+    print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+    accuracies_file_wo.write(str(acc_list_l))
+    accuracies_file_w.write(str(acc_list_g))
+    accuracies_file_wo.write('\n')
+    accuracies_file_w.write('\n')
+    for label in range(args.num_classes):
+        print("--------------------------------------------------------------------------")
+        print(f'For class {label}')
+        acc_list_l, acc_list_g, loss_list = test_inference_new_het_by_attack(args, local_model_list, test_dataset, user_groups_lt, global_protos, label)
         print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
         print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
         print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
@@ -140,12 +223,12 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         accuracies_file_w.write(str(acc_list_g))
         accuracies_file_wo.write('\n')
         accuracies_file_w.write('\n')
-    for idx in idxs_users:
+    """for idx in idxs_users:
         acc, loss = test_inference(args, local_model_list[idx], test_dataset, global_protos)
         print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
         print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
         acc = test_inference_new_het(args, local_model_list, test_dataset,global_protos)
-        print('For all users, mean of test acc is {:.5f}'.format(acc))
+        print('For all users, mean of test acc is {:.5f}'.format(acc))"""
 
     # save protos
     if args.dataset == 'mnist':
@@ -334,4 +417,6 @@ if __name__ == '__main__':
     else:
         FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)"""
     Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)
+    aggregated_layers = ['none', 'mapping_layers', 'all_layers']
+    aggregated = aggregated_layers[2]
+    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated)

@@ -566,12 +566,12 @@ def test_inference_new_het(args, local_model_list, test_dataset, global_protos=[
 
     return acc
 
-def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_gt, global_protos=[]):
+
+def test_inference_new_het_by_attack(args, local_model_list, test_dataset,user_groups_gt, global_protos=[], attack_label=0):
     """ Returns the test accuracy and loss.
     """
     loss, total, correct = 0.0, 0.0, 0.0
     loss_mse = nn.MSELoss()
-
     device = args.device
     criterion = nn.NLLLoss().to(device)
 
@@ -579,13 +579,13 @@ def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list
     acc_list_l = []
     loss_list = []
     for idx in range(args.num_users):
+        loss, total, correct = 0.0, 0.0, 0.0
         model = local_model_list[idx]
         model.to(args.device)
-        testloader = DataLoader(DatasetSplit(test_dataset, user_groups_gt[idx]), batch_size=64, shuffle=True)
-
-        # test (local model)
-        model.eval()
-        for batch_idx, (images, labels) in enumerate(testloader):
+        test_loader = DataLoader(DatasetSplit(test_dataset, user_groups_gt[idx]), batch_size=64, shuffle=True)
+        test_loader_filtered = [(images, labels) for images, labels in test_loader if (labels == attack_label).any().item()]
+        print("len test_loader_filtered: ", len(test_loader_filtered))
+        for batch_idx, (images, labels) in enumerate(test_loader_filtered):
             images, labels = images.to(device), labels.to(device)
             model.zero_grad()
             outputs, protos = model(images)
@@ -598,14 +598,17 @@ def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list
             pred_labels = pred_labels.view(-1)
             correct += torch.sum(torch.eq(pred_labels, labels)).item()
             total += len(labels)
-
-        acc = correct / total
+        if total == 0:
+            acc = 0
+        else:
+            acc = correct / total
         print('| User: {} | Global Test Acc w/o protos: {:.3f}'.format(idx, acc))
         acc_list_l.append(acc)
 
         # test (use global proto)
         if global_protos!=[]:
-            for batch_idx, (images, labels) in enumerate(testloader):
+            loss, total, correct = 0.0, 0.0, 0.0
+            for batch_idx, (images, labels) in enumerate(test_loader_filtered):
                 images, labels = images.to(device), labels.to(device)
                 model.zero_grad()
                 outputs, protos = model(images)
@@ -638,13 +641,99 @@ def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list
                     loss2 = loss2.cpu().detach().numpy()
                 else:
                     loss2 = loss2.detach().numpy()
-
-            acc = correct / total
+            if total == 0:
+                acc = 0
+            else:
+                acc = correct / total
+            print('len of total: ', total)
+            print('len of correct: ', correct)
             print('| User: {} | Global Test Acc with protos: {:.5f}'.format(idx, acc))
             acc_list_g.append(acc)
             loss_list.append(loss2)
 
     return acc_list_l, acc_list_g, loss_list
+def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_gt, global_protos=[]):
+    """ Returns the test accuracy and loss.
+    """
+    loss_mse = nn.MSELoss()
+
+    device = args.device
+    criterion = nn.NLLLoss().to(device)
+
+    acc_list_g = []
+    acc_list_l = []
+    loss_list = []
+
+    for idx in range(args.num_users):
+        print("User: ", idx)
+        model = local_model_list[idx]
+        model.to(args.device)
+        testloader = DataLoader(DatasetSplit(test_dataset, user_groups_gt[idx]), batch_size=64, shuffle=True)
+        print("len testloader: ", len(testloader))
+
+        # Initialize accuracy tracking for local model
+        total, correct = 0, 0
+        loss = 0.0
+        
+        # Local model evaluation
+        model.eval()
+        for batch_idx, (images, labels) in enumerate(testloader):
+            images, labels = images.to(device), labels.to(device)
+            model.zero_grad()
+            outputs, protos = model(images)
+            
+            batch_loss = criterion(outputs, labels)
+            loss += batch_loss.item()
+
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            correct += torch.sum(torch.eq(pred_labels, labels)).item()
+            total += len(labels)
+        
+        acc_local = correct / total
+        print('| User: {} | Global Test Acc w/o protos: {:.3f}'.format(idx, acc_local))
+        acc_list_l.append(acc_local)
+        
+        # Initialize accuracy tracking for global prototypes
+        if global_protos:
+            total_w, correct_w = 0, 0
+            loss_proto = 0.0
+            
+            for batch_idx, (images, labels) in enumerate(testloader):
+                images, labels = images.to(device), labels.to(device)
+                model.zero_grad()
+                _, protos = model(images)
+                
+                # Compute the distance between protos and global_protos
+                dist = torch.full((images.shape[0], args.num_classes), 100.0).to(device)
+                for i in range(images.shape[0]):
+                    for j in range(args.num_classes):
+                        if j in global_protos:
+                            d = loss_mse(protos[i, :], global_protos[j][0])
+                            dist[i, j] = d
+                
+                # Prediction
+                _, pred_labels = torch.min(dist, 1)
+                correct_w += torch.sum(torch.eq(pred_labels, labels)).item()
+                total_w += len(labels)
+                
+                # Compute loss
+                proto_new = copy.deepcopy(protos.data)
+                for i, label in enumerate(labels):
+                    if label.item() in global_protos:
+                        proto_new[i, :] = global_protos[label.item()][0].data
+                
+                loss2 = loss_mse(proto_new, protos)
+                loss_proto += loss2.cpu().detach().numpy() if args.device == 'cuda' else loss2.detach().numpy()
+            print("len of total_w: ", total_w)
+            print("len of correct_w: ", correct_w)
+            acc_global = correct_w / total_w
+            print('| User: {} | Global Test Acc with protos: {:.5f}'.format(idx, acc_global))
+            acc_list_g.append(acc_global)
+            loss_list.append(loss_proto)
+    
+    return acc_list_l, acc_list_g, loss_list
+
 
 
 def save_protos(args, local_model_list, test_dataset, user_groups_gt):

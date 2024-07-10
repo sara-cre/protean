@@ -1,0 +1,7 @@
+save/
+dataset/
+data/
+tensorboard/
+*.log
+*.pyc
+
