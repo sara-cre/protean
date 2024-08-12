@@ -69,7 +69,10 @@ def args_parser():
     parser.add_argument('--ld', type=float, default=1, help="weight of proto loss")
     parser.add_argument('--ft_round', type=int, default=10, help="round of fine tuning")
     parser.add_argument('--loss', type=str, default='sparse_categorical_crossentropy', help="training loss function")
-    parser.add_argument('--semi', type=float, default=0.0, help="ratio of unlabeled data")
+    parser.add_argument('--semi', type=int, default=0, help="ratio of unlabeled data")
+    parser.add_argument('--dirichlet', type=float, default=0.0, help="dirichlet distribution")  
+    parser.add_argument('--alpha', type=float, default=0.5, help="alpha for dirichlet distribution")   
+
     
     
     args = parser.parse_args()
