@@ -1,0 +1,11 @@
+save/
+dataset/
+data/
+tensorboard/
+*.log
+saves/
+save2/
+*.pdf
+*.txt
+data/
+

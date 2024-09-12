@@ -1,0 +1,14 @@
+User 0:
+  Class 0: 1777 instances
+  Class 1: 18223 instances
+  Class 4: 10000 instances
+  Class 7: 2990 instances
+  Class 8: 7010 instances
+  Class 9: 18 instances
+
+User 1:
+  Class 0: 1667 instances
+  Class 1: 18333 instances
+  Class 6: 10000 instances
+  Class 8: 10000 instances
+

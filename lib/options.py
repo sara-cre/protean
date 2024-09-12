@@ -45,6 +45,7 @@ def args_parser():
                         of dataset")
     parser.add_argument('--num_classes', type=int, default=10, help="number \
                         of classes")
+    parser.add_argument('--num_features', type=int, default=10, help="number of features")
     parser.add_argument('--gpu', default=0, help="To use cuda, set \
                         to a specific GPU ID. Default set to use CPU.")
     parser.add_argument('--optimizer', type=str, default='adam', help="type \
@@ -60,6 +61,8 @@ def args_parser():
     parser.add_argument('--seed', type=int, default=1234, help='random seed')
     parser.add_argument('--test_ep', type=int, default=10, help="num of test episodes for evaluation")
 
+    parser.add_argument('--data_percent', type=float, default=1.0, help="percentage of data used")
+
     # Local arguments
     parser.add_argument('--ways', type=int, default=3, help="num of classes")
     parser.add_argument('--shots', type=int, default=100, help="num of shots")
@@ -69,8 +72,22 @@ def args_parser():
     parser.add_argument('--ld', type=float, default=1, help="weight of proto loss")
     parser.add_argument('--ft_round', type=int, default=10, help="round of fine tuning")
     parser.add_argument('--loss', type=str, default='sparse_categorical_crossentropy', help="training loss function")
-    parser.add_argument('--semi', type=float, default=0.0, help="ratio of unlabeled data")
+    parser.add_argument('--semi', type=int, default=0, help="ratio of unlabeled data")
+    parser.add_argument('--dirichlet', type=float, default=0.0, help="dirichlet distribution")  
+    parser.add_argument('--alpha', type=float, default=0.5, help="alpha for dirichlet distribution")   
+    parser.add_argument('--classic_eval', type=int, default=1, help="alpha for dirichlet distribution") 
     
+    parser.add_argument('--lr_v', type=float, default=0.01, help='learning rate for cleint')
+    parser.add_argument('--lr_u', type=float, default=0.01, help='learning rate for server')
+    parser.add_argument('--clip_grad_norm', type=bool, default=False, help='clip grad norm')
+    parser.add_argument('--clip_value', type=float, default=0.5, help='clip value')
+    parser.add_argument('--client_mode', type=str, default='representation', help='client mode')
+
+    parser.add_argument('--attack_type', type=str, default='none', help='poisoning attack type')
+    parser.add_argument('--flip_ratio', type=float, default=0.1, help='flipping ratio')
+    parser.add_argument('--num_attackers', type=float, default=1, help='number of attackers')
+    parser.add_argument('--attack_round', type=int, default=0, help='attack round')
     
+    parser.add_argument('--mu', type=float, default=0.01, help='mu for fedprox')
     args = parser.parse_args()
     return args

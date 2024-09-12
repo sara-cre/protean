@@ -762,6 +762,116 @@ def xiotid_noniid_lt_all(args, test_dataset, num_users):
     return dict_users
 
 
+
+
+def xiiotid_noniid_dirichlet(dataset, y_train, n_parties, partition):
+    """
+    Partition data in a non-IID manner using Dirichlet distribution.
+
+    Args:
+        dataset (str): Name of the dataset.
+        y_train (numpy array): Labels of the training data.
+        n_parties (int): Number of parties to partition the data into.
+        partition (str): Partitioning strategy.
+
+    Returns:
+        dict: A dictionary where keys are party indices and values are lists of data indices for that party.
+    """
+    num = eval(partition[13:])
+    if dataset in ('celeba', 'covtype', 'a9a', 'rcv1', 'SUSY'):
+        num = 1
+        K = 2
+    else:
+        K = 10
+    if dataset == "cifar100":
+        K = 100
+    elif dataset == "tinyimagenet":
+        K = 200
+
+    if num == 10:
+        net_dataidx_map = {i: np.ndarray(0, dtype=np.int64) for i in range(n_parties)}
+        for i in range(10):
+            idx_k = np.where(y_train == i)[0]
+            np.random.shuffle(idx_k)
+            split = np.array_split(idx_k, n_parties)
+            for j in range(n_parties):
+                net_dataidx_map[j] = np.append(net_dataidx_map[j], split[j])
+    else:
+        times = [0 for _ in range(K)]
+        contain = []
+        for i in range(n_parties):
+            current = [i % K]
+            times[i % K] += 1
+            j = 1
+            while j < num:
+                ind = random.randint(0, K-1)
+                if ind not in current:
+                    j += 1
+                    current.append(ind)
+                    times[ind] += 1
+            contain.append(current)
+        
+        net_dataidx_map = {i: np.ndarray(0, dtype=np.int64) for i in range(n_parties)}
+        for i in range(K):
+            idx_k = np.where(y_train == i)[0]
+            np.random.shuffle(idx_k)
+            split = np.array_split(idx_k, times[i])
+            ids = 0
+            for j in range(n_parties):
+                if i in contain[j]:
+                    net_dataidx_map[j] = np.append(net_dataidx_map[j], split[ids])
+                    ids += 1
+
+    return net_dataidx_map
+
+
+def xiiotid_noniid_dirichlet2(args, dataset, num_users, alpha):
+    min_size = 0
+    min_require_size = 10
+    K = args.num_classes
+    print("-----------------------------in xiiotid_noniid_dirichlet2-----------------------------")
+    print("--alpha:", alpha)
+    num_instances = dataset.__len__()
+    num_classes = len(np.unique(dataset.targets)) #10
+    N = num_instances
+    #np.random.seed(2020)
+    np.random.seed(args.seed)
+    net_dataidx_map = {}
+    n_parties = num_users
+    while min_size < min_require_size:
+        idx_batch = [[] for _ in range(n_parties)]
+        for k in range(K):
+            idx_k = np.where(dataset.targets == k)[0]
+            np.random.shuffle(idx_k)
+            proportions = np.random.dirichlet(np.repeat(alpha, n_parties))
+            # logger.info("proportions1: ", proportions)
+            # logger.info("sum pro1:", np.sum(proportions))
+            ## Balance
+            proportions = np.array([p * (len(idx_j) < N / n_parties) for p, idx_j in zip(proportions, idx_batch)])
+            # logger.info("proportions2: ", proportions)
+            proportions = proportions / proportions.sum()
+            # logger.info("proportions3: ", proportions)
+            proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+            # logger.info("proportions4: ", proportions)
+            idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))]
+            min_size = min([len(idx_j) for idx_j in idx_batch])
+            # if K == 2 and n_parties <= 10:
+            #     if np.min(proportions) < 200:
+            #         min_size = 0
+            #         break
+
+
+    for j in range(n_parties):
+        np.random.shuffle(idx_batch[j])
+        net_dataidx_map[j] = idx_batch[j]
+    print(net_dataidx_map.keys())
+    classes_list = []
+    for i in range(num_users):
+        classes = np.unique(dataset.targets[net_dataidx_map[i]])
+        classes_list.append(classes)
+    print(classes_list)
+    return net_dataidx_map, classes_list
+
 if __name__ == '__main__':
     dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True,
                                    transform=transforms.Compose([
