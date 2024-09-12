@@ -12,11 +12,17 @@ from flwr.common import Metrics
 from sklearn.model_selection import train_test_split
 from sklearn import preprocessing
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+from sklearn.preprocessing import MinMaxScaler 
 from sklearn.metrics import classification_report, confusion_matrix 
 
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
+from sklearn.utils import resample
+
+
+from poisoning import label_flipping_untargeted, flip_labels
 
 class DataFrameDataset(Dataset):
     def __init__(self, features, targets):
@@ -57,6 +63,94 @@ HTTPFlood
 SlowrateDoS
 4
 """
+
+def sample_within_range(group, min_samples, max_samples):
+    # Determine the number of samples for the class
+    n_samples = min(max(len(group), min_samples), max_samples)
+    
+    # Resample (if the group is larger than n_samples, it will undersample; otherwise, it oversamples)
+    return resample(group, replace=len(group) < n_samples, n_samples=n_samples, random_state=42)
+
+def sample_with_max(group, max_samples):
+    return resample(group, replace=False, n_samples=min(len(group), max_samples), random_state=42)
+
+
+
+def load_data_cicids2017(args):
+    folder = '../dataset/cicids2017'
+    data = pd.DataFrame() # Initialize an empty DataFrame to store the dataset
+    # Load the dataset
+    for file in os.listdir(folder):
+        if file.endswith('.csv'):
+            path = os.path.join(folder, file)
+            print(path)
+            data_file = pd.read_csv(path)
+            data = pd.concat([data, data_file])
+            
+    
+    # Drop unnecessary columns
+    drop_columns = ['Flow ID', 'Src IP', 'Src Port', 'Dst IP', 'Dst Port', 'Timestamp']
+    data = data.drop(drop_columns, axis=1)
+    #print number of na values
+    print("Number of na values",data.isna().sum().sum())
+    # Drop missing values
+    data.replace([np.inf, -np.inf], np.nan, inplace=True)
+    data = data.dropna()
+    # Drop duplicates
+    data = data.drop_duplicates()
+    # Separate features (X) and labels (Y)
+    data = data.sample(frac=args.data_percent, random_state=42)
+    class_counts = data['Label'].value_counts()
+
+    # Print the result
+    print("class count:", class_counts)
+    min_samples = 100
+    max_samples = 10000
+    valid_classes = class_counts[class_counts >= min_samples].index
+    df_filtered = data[data['Label'].isin(valid_classes)]
+    df_balanced = df_filtered.groupby('Label', group_keys=False).apply(lambda x: sample_with_max(x, max_samples))
+
+    #df_balanced = data.groupby('Label', group_keys=False).apply(lambda x: sample_within_range(x, min_samples, max_samples))
+    #data = df_balanced
+    class_counts = data['Label'].value_counts()
+
+    # Print the result
+    print("class count:", class_counts)
+    print("Number of na values",data.isna().sum().sum())
+    X = data.drop(['Label'], axis=1)
+    #print number of columns
+    print("Number of columns",len(data.columns))
+    args.num_features = len(data.columns) - 1
+    Y = data['Label']
+    print(Y)
+    #convert label to numerical values
+    label_encoder = LabelEncoder()
+    Y = label_encoder.fit_transform(Y)
+    #print number of unique labels
+    print("labels", np.unique(Y))
+    print("Number of unique labels", len(np.unique(Y)))
+    args.num_classes = len(np.unique(Y))
+    # Split the dataset 
+    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42) 
+    print("Number of na values",X_train.isna().sum().sum())
+    print("Number of infinite values in X_train:", np.isinf(X_train).sum().sum())
+
+    # scale data
+    t = MinMaxScaler()
+    t.fit(X_train)
+    X_train = t.transform(X_train)
+    X_test = t.transform(X_test)
+
+    
+
+
+
+    # Create Dataset objects for training and testing data
+    train_dataset = DataFrameDataset(X_train, Y_train)
+    test_dataset = DataFrameDataset(X_test, Y_test)
+    print("length of test dataset", test_dataset.__len__())
+    return train_dataset, test_dataset
+
 
 def load_data_5g_nidd(args):
     # Load the dataset
@@ -215,7 +309,7 @@ def load_data_x_iiotid(args):
     print("Categorical columns:\n", cat_cols)
     print("Boolean columns:\n", bool_cols)
     """# Impute numerical columns with mean
-    num_imputer = SimpleImputer(strategy='mean')
+    num_imputer = SimpleImputer(strategy='mean')0
     data[num_cols] = num_imputer.fit_transform(data[num_cols])
 
     # Impute categorical columns with most frequent value
@@ -228,16 +322,22 @@ def load_data_x_iiotid(args):
     """bool_imputer = SimpleImputer(strategy='most_frequent')  # or strategy='constant', fill_value=False
     data[bool_cols] = bool_imputer.fit_transform(data[bool_cols])
     print("Missing values after imputation:\n", data.isnull().sum().sum())"""
-    
+    data = data[data['class2'] != 'crypto-ransomware']
+
+    #take only a percentage of the data
+    data = data.sample(frac=args.data_percent, random_state=42)
 
     # Separate features (X) and labels (Y)
     X = data.drop(['class1', 'class2', 'class3'], axis=1) 
     Y = data['class2'] 
     print(len(Y))
+    
     # Convert categorical columns to numerical using one-hot encoding 
     #X = pd.get_dummies(X, columns=cat_cols)
     # Columns to exclude from categorical columns
     exclude_cols = ['class1', 'class2', 'class3']
+    
+
 
     # Remove the excluded columns from the categorical columns list
     cat_cols = cat_cols.difference(exclude_cols)
@@ -248,11 +348,14 @@ def load_data_x_iiotid(args):
     # Convert labels to numerical values 
     label_encoder = LabelEncoder() 
     Y = label_encoder.fit_transform(Y) 
+    """if args.attack_type == 'label-flipping':
+        Y = flip_labels(args, Y, args.flip_ratio)"""
+        #Y = label_flipping_untargeted(Y, args.flip_ratio)
     # Split the dataset 
     X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42) 
-    if args.semi > 0:
+    """if args.semi > 0:
         unlabeled_indices = np.random.choice(len(Y_train), size=int(len(Y_train) * args.semi), replace=False)
-        Y_train[unlabeled_indices] = -1
+        Y_train[unlabeled_indices] = -1"""
     # Create Dataset objects for training and testing data
     train_dataset = DataFrameDataset(X_train, Y_train)
     test_dataset = DataFrameDataset(X_test, Y_test)
@@ -944,6 +1047,7 @@ def split_data_dirichlet(x_train, y_train, x_test, y_test, num_clients, alpha=0.
                 y_tests[str(i)] = np.append(y_tests[str(i)], y_train[client_test_indices])"""
     
     return x_trains, y_trains, x_tests, y_tests
+    
 
 def split_data(label_encoder, split_type= "random", x_train=None, y_train=None, x_test=None, y_test=None, num_clients=2, clients_special_distribution=None, alpha=0.1):
     if split_type == "random":

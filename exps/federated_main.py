@@ -11,6 +11,9 @@ from tensorboardX import SummaryWriter
 import random
 import torch.utils.model_zoo as model_zoo
 from pathlib import Path
+from itertools import pairwise
+import math
+
 
 lib_dir = (Path(__file__).parent / ".." / "lib").resolve()
 if str(lib_dir) not in sys.path:
@@ -21,38 +24,282 @@ if str(mod_dir) not in sys.path:
 
 from resnet import resnet18
 from options import args_parser
-from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack
+from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack, test_inference_new_het_lt_new, test_inference_new_het_lt_new_op, test_inference_metrics, test_inference_by_attack_server
 from models import CNNMnist, CNNFemnist, CustomCNN
 from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem
-from plot import plot_fl_accuracies, plot_fedproto_accuracies
+from plot import plot_fl_accuracies, plot_fedproto_accuracies, plot_metrics
 import time
 import time
+from models import Proj, Embedder
+from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
+from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
 
+
+def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
+    assert client_mode in ['none', 'representation', 'out_layer', 'interpolate']
+
+    def is_on_client(name):
+        if client_mode == 'none':
+            return False
+        elif client_mode == 'representation':
+            return 'conv' in name or 'reshape_layer' in name
+        elif client_mode == 'out_layer':
+            return 'dense2' in name
+        elif client_mode == 'interpolate':
+            return True
+
+    def is_on_server(name):
+        return not is_on_client(name)
+
+    return is_on_client, is_on_server
+
+
+def split_server_and_client_params_old(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
+
+    assert client_mode in ['none', 'representation', 'out_layer', 'interpolate'] #['none', 'res_layer', 'inp_layer', 'out_layer', 'adapter', 'interpolate', 'finetune'] 
+    is_on_server = None
+    if client_mode == 'none':
+        def is_on_client(name):
+            return False
+    elif client_mode == 'representation':
+        def is_on_client(name):
+            return 'conv' in name
+    elif client_mode == 'out_layer':
+        def is_on_client(name):
+            return 'fc' in name
+    elif client_mode == 'interpolate':
+        is_on_client = lambda _: True
+        is_on_server = lambda _: True
+    if is_on_server is None:
+        def is_on_server(name): 
+            return not is_on_client(name)
+    return is_on_client, is_on_server
+
+
+def average_weights_shared(local_weights, is_on_server):
+    # Copy the weights from the first model as a starting point
+    global_weights = copy.deepcopy(local_weights[0])
+
+    # Initialize the global weights for shared parameters to zero
+    for key in global_weights.keys():
+        if is_on_server(key):
+            print(key)
+            global_weights[key] = torch.zeros_like(global_weights[key])
+    
+    # Sum the shared parameters across all local models
+    for i in range(len(local_weights)):
+        for key in global_weights.keys():
+            if is_on_server(key):
+                global_weights[key] += local_weights[i][key]
+
+    # Divide the summed weights by the number of local models to average them
+    for key in global_weights.keys():
+        if is_on_server(key):
+            global_weights[key] = torch.div(global_weights[key], len(local_weights))
+    
+    return global_weights
+
+def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
+    accs, losses, f1_scores, precision_scores, f1_macros, acc_macros = [], [], [], [], [], []
+    if args.attack_type == 'none':
+        file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+    else:
+        file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    file_ext = 'before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+    acc_file=open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    f1_file=open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_acc_file=open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    macro_f1_file=open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file=open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    acc_byclient_byclass = []
+    for user_id in range(args.num_users):
+        local_model = CustomCNN(args=args)
+        model = copy.deepcopy(local_model)
+        local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[user_id], global_round=0)
+        weight, train_losss, train_acc = local_model.update_weights(args, user_id, model=model, global_round=0)
+        test_model = CustomCNN(args=args)
+        test_model.load_state_dict(weight)
+        #acc, loss = test_inference_metrics(args, test_model, test_dataset,)
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, test_model, test_dataset)
+        print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accs.append(acc)
+        f1_scores.append(f1)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        accs.append(acc)
+        losses.append(loss)
+
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, test_model, test_dataset, class_)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    acc_file.write(str(accs))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+    acc_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    return accs, losses
+
+
+#link scaffold https://github.com/ongzh/ScaffoldFL/blob/master/src/scaffold_main.py
 def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list):
     timestamp = time.time()
-    filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{timestamp}.txt'
-
+    filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt'
+    #create folder if not exist
+    # Create folder if it doesn't exist
+    if args.attack_type == 'none':
+        file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    else:
+        file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
     # Open the file using the created file name
-    accuracies_file = open(filename, 'w')
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    #accuracies_file = open(filename, 'w')
+    #recall_file = open(f'../save/recall_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt', 'w')
+    
     idxs_users = np.arange(args.num_users)
+
+    if args.alg == 'scaffold':
+        #initiliase total delta to 0 (sum of all control_delta, triangle Ci)
+        delta_c = copy.deepcopy(global_model.state_dict())
+        #sum of delta_y / sample size
+        delta_x = copy.deepcopy(global_model.state_dict())
+        #model for local control varietes
+        local_controls = [CustomCNN(args=args) for i in range(args.num_users)]
+        control_global = CustomCNN(args=args)
+        control_weights = control_global.state_dict()
+        #local_models = [cifarCNN(args=args) for i in range(args.num_users)]
+        
+        for net in local_controls:
+            net.load_state_dict(control_weights)
+    if args.alg == 'fedalt' or args.alg == 'fedsim':
+        client_mode = args.client_mode
+        is_on_client, is_on_server = split_server_and_client_params(client_mode)
 
     train_loss, train_accuracy = [], []
     accuracies = []
-    for round in tqdm(range(args.rounds)):
-        local_weights, local_losses, local_accs = [], [], []
-        print(f'\n | Global Training Round : {round + 1} |\n')
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    local_weights_prev = []
+    
 
+    for round in tqdm(range(args.rounds)):
+        local_weights,  local_losses, local_accs = [], [], []
+        
+        print(f'\n | Global Training Round : {round + 1} |\n')
+        if args.alg == 'scaffold':
+            for ci in delta_c:
+                delta_c[ci] = 0.0
+            for ci in delta_x:
+                delta_x[ci] = 0.0
 
         for idx in idxs_users:
-            local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
-            w, loss, acc = local_model.update_weights(args, idx, model=copy.deepcopy(global_model), global_round=round)
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
+            if args.alg == 'scaffold':
+
+                weights, loss, acc, local_delta_c, local_delta, control_local_w = local_model.update_weights_scaffold(args, idx, global_model, global_round=round, c_global=control_global, c_local=local_controls[idx])
+                if round != 0:
+                    local_controls[idx].load_state_dict(control_local_w)
+                for w in delta_c:
+                    if round==0:
+                        delta_x[w] += weights[w]
+                    else:
+                        delta_x[w] += local_delta[w]
+                        delta_c[w] += local_delta_c[w]
+                local_weights.append(copy.deepcopy(weights))
+                local_model_list[idx].load_state_dict(copy.deepcopy(weights))
+            elif args.alg == 'fedalt':
+                if round == 0:
+                    w, loss, acc = local_model.update_weights_fedalt(args, idx, model=copy.deepcopy(global_model),local_weights = None, global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev.append(copy.deepcopy(w))            
+                else:
+                    w, loss, acc = local_model.update_weights_fedalt(args, idx, model=copy.deepcopy(global_model), local_weights =local_weights_prev[idx], global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev[idx] = copy.deepcopy(w)
+                local_weights.append(copy.deepcopy(w))
+                
+            elif args.alg == 'fedsim':
+                if round == 0:
+                    w, loss, acc = local_model.update_weights_fedsim(args, idx, model=copy.deepcopy(global_model),local_weights=None, global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev.append(copy.deepcopy(w))
+                else:
+                    w, loss, acc = local_model.update_weights_fedsim(args, idx, model=copy.deepcopy(global_model), local_weights=local_weights_prev[idx], global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev[idx] = copy.deepcopy(w)
+                    
+                local_weights.append(copy.deepcopy(w))
+            else:
+                w, loss, acc = local_model.update_weights(args, idx, model=copy.deepcopy(global_model), global_round=round)
+                local_weights.append(copy.deepcopy(w))
+            if args.alg != 'scaffold':
+                local_model_list[idx].load_state_dict(copy.deepcopy(w))
             
 
-            local_weights.append(copy.deepcopy(w))
+            
             local_losses.append(copy.deepcopy(loss))
             local_accs.append(copy.deepcopy(acc))
 
-        global_weights = average_weights_(local_weights)
+                
+            
+        if args.alg == 'scaffold':
+            #update the delta C (line 16)
+            for w in delta_c:
+                delta_c[w] /= args.num_users
+                delta_x[w] /= args.num_users
+            
+            #update global control variate (line17)
+            control_global_W = control_global.state_dict()
+            global_weights = global_model.state_dict()
+            #equation taking Ng, global step size = 1
+            for w in control_global_W:
+                #control_global_W[w] += delta_c[w]
+                if round == 0:
+                    global_weights[w] = delta_x[w]
+                else:
+                    global_weights[w] += delta_x[w]
+                    control_global_W[w] +=  delta_c[w]
+
+            #update global model
+            control_global.load_state_dict(control_global_W)
+            global_model.load_state_dict(global_weights)
+        elif args.alg == 'fedalt' or args.alg == 'fedsim':
+            global_weights = average_weights_shared(local_weights, is_on_server)
+        elif args.alg == 'krum':
+            global_weights = krum(args, local_weights)
+        elif args.alg == 'median':
+            global_weights = median(args,local_weights)
+        elif args.alg == 'trimmed_mean':
+            global_weights = trimmed_mean(args, local_weights)
+        elif args.alg == 'geometric_median':
+            global_weights = geometric_median(args, local_weights)
+        elif args.alg == 'coordinate_wise_median':
+            global_weights = coordinate_wise_median(args, local_weights)
+        else:
+            global_weights = average_weights_(local_weights)
         # update global weights
 
         
@@ -66,16 +313,86 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
         global_protos = []
-        acc, loss = test_inference(args, global_model, test_dataset, global_protos)
-        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
-        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        if args.alg == 'fedalt' or args.alg == 'fedsim':
+            for user in range(args.num_users):
+                acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, local_model_list[user], test_dataset)
+                print('User {}, test acc {:.5f}, test loss {:.5f}'.format(user, acc, loss))
+        
+        else:
+            """class_counts = [0]*args.num_classes
+            for data, target in test_dataset:
+                for class_ in range(args.num_classes):
+                    if target == class_:
+                        class_counts[class_] += 1+
+            for class_ in range(args.num_classes):
+                print(f'Class {class_} has {class_counts[class_]} samples')"""
+            #acc, loss = test_inference(args, global_model, test_dataset, global_protos)
+            acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, global_model, test_dataset)
+            print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+            #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
         accuracies.append(acc)
+        f1_scores.append(f1)
+        recall_scores.append(recall)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        """for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+            print(f'Class {class_} acc: {acc}')"""
+
+    acc_byclient_byclass = []
+    for user in range(args.num_users):
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, local_model_list[user], test_dataset, class_)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)
+    acc_byclass = []
+    for class_ in range(args.num_classes):
+        acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+        acc_byclass.append(acc)
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    file.close()
+
+    file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()
+
     accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
     # save protos
     if args.dataset == 'mnist':
         save_protos(args, local_model_list, test_dataset, user_groups_lt)
     accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+    """file_name = file_folder + 'acc_' + file_ext + '.txt'
     plot_fl_accuracies(filename)
+    file_name = file_folder + 'f1_' + file_ext + '.txt'
+    plot_fl_accuracies(filename)
+    file_name = file_folder + 'macro_acc' + file_ext + '.txt'
+    plot_fl_accuracies(filename)
+    file_name = file_folder + 'macro_f1' + file_ext + '.txt'
+    plot_fl_accuracies(filename)"""
 
 model_urls = {
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -85,7 +402,58 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
-def aggregate_mapping_layers(local_weights):
+
+
+def aggregate_scaffold(args, res_cache, global_params_dict, c_global):
+    # Extract the delta values for model parameters and control variates from res_cache
+    y_delta_cache = list(zip(*res_cache))[0]
+    c_delta_cache = list(zip(*res_cache))[1]
+    
+    global_lr = args.lr
+
+    # Filter parameters that require gradients
+    trainable_parameters = filter(
+        lambda param: param.requires_grad, global_params_dict.values()
+    )
+
+    # Update global model
+    avg_weight = torch.tensor(
+        [1 / args.num_users for _ in range(args.num_users)],
+        device=args.device,
+    )
+    for param, y_del in zip(trainable_parameters, zip(*y_delta_cache)):
+        x_del = torch.sum(avg_weight * torch.stack(y_del, dim=-1), dim=-1)
+        param.data += global_lr * x_del
+
+    # Update global control variates
+    for c_g, c_del in zip(c_global, zip(*c_delta_cache)):
+        c_del = torch.sum(avg_weight * torch.stack(c_del, dim=-1), dim=-1)
+        # Since client_id_indices is equal to args.num_users, scaling factor is just 1
+        c_g.data += global_lr * c_del
+
+    return global_params_dict, c_global
+
+
+def aggregate_fedopt(local_weights, global_model):
+        pseudo_grads = self.get_client_pseudo_grads()
+        client_num_train = 1
+
+        pseudo_grads = [fut.wait() for fut in pseudo_grads]
+        client_num_train = [fut.wait() for fut in client_num_train]
+        total_train = sum(client_num_train)
+
+        self.optimizer.zero_grad()
+
+        # probably need to reavluate this...
+        for (param_name,param) in self.model.state_dict().items():
+            self.model.get_parameter(param_name).grad = torch.zeros_like(param)
+
+            for n_train,pseudo_grad in zip(client_num_train,pseudo_grads):
+                self.model.get_parameter(param_name).grad = self.model.get_parameter(param_name).grad + (n_train / total_train) * pseudo_grad[param_name]
+
+        self.optimizer.step()
+
+def aggregate_mapping_layers_(local_weights):
     aggregated_weights = copy.deepcopy(local_weights[0])
     for key in aggregated_weights.keys():
         for i in range(1, len(local_weights)):
@@ -111,29 +479,249 @@ def aggregate_weights(local_weights):
         aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
     return aggregated_weights
 
-def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none'):
+import torch
+
+def krum(args, local_weights, f=0):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    n = len(gradients)
+    m = n - f - 2  # Number of gradients to consider for scoring
+    
+    # Calculate pairwise distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distances[i, j] = distances[j, i] = torch.norm(gradients[i] - gradients[j])
+    
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[:m + 1])  # Sum the m+1 smallest distances
+        scores.append((score.item(), gradients[i]))
+
+    # Select the gradient with the smallest score
+    _, selected_gradient = min(scores, key=lambda x: x[0])
+
+    # Return the selected gradient as a dictionary
+    return list_todict(selected_gradient, args)
+
+
+
+def median(args, local_weights):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Stack all gradients along a new dimension and take the median along that dimension
+    stacked_gradients = torch.stack(gradients)
+    median_gradient = torch.median(stacked_gradients, dim=0).values
+    
+    # Return the median gradient as a dictionary
+    return list_todict(median_gradient.tolist(), args)
+
+
+
+def trimmed_mean(args, local_weights, trim_ratio=0.1):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Number of elements to trim from each end
+    trim_count = int(len(gradients) * trim_ratio)
+    
+    # Stack all gradients along a new dimension
+    stacked_gradients = torch.stack(gradients)
+    
+    # Sort and trim along the new dimension
+    sorted_gradients, _ = torch.sort(stacked_gradients, dim=0)
+    trimmed_gradients = sorted_gradients[trim_count:-trim_count]  # Trim the extremes
+    
+    # Compute the mean of the trimmed gradients
+    trimmed_mean_gradient = torch.mean(trimmed_gradients, dim=0)
+    
+    # Return the trimmed mean gradient as a dictionary
+    return list_todict(trimmed_mean_gradient.tolist(), args)
+
+def geometric_median(args, local_weights, max_iter=100, eps=1e-5):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Start with the mean as an initial estimate for the geometric median
+    median = torch.mean(torch.stack(gradients), dim=0)
+    
+    for _ in range(max_iter):
+        distances = torch.stack([torch.norm(gradient - median) for gradient in gradients])
+        weights = 1.0 / torch.clamp(distances, min=eps)
+        weights /= weights.sum()
+        
+        new_median = torch.sum(torch.stack([weight * gradient for weight, gradient in zip(weights, gradients)]), dim=0)
+        
+        if torch.norm(new_median - median) < eps:
+            break
+        median = new_median
+    
+    # Return the geometric median as a dictionary
+    return list_todict(median.tolist(), args)
+
+
+def coordinate_wise_median(args, local_weights):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Stack all gradients along a new dimension and take the median along each coordinate
+    stacked_gradients = torch.stack(gradients)
+    coordinate_wise_median = torch.median(stacked_gradients, dim=0).values
+    
+    # Return the coordinate-wise median gradient as a dictionary
+    return list_todict(coordinate_wise_median.tolist(), args)
+
+import torch
+import os
+
+def angular_BRSA(args,local_weights, angle_threshold=0.5):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    n = len(gradients)
+    cosine_similarities = torch.zeros((n, n))
+    
+    # Normalize gradients to unit vectors for cosine similarity calculation
+    normalized_gradients = [g / torch.norm(g) for g in gradients]
+    
+    # Calculate pairwise cosine similarities
+    for i in range(n):
+        for j in range(i + 1, n):
+            cosine_similarity = torch.dot(normalized_gradients[i], normalized_gradients[j])
+            cosine_similarities[i, j] = cosine_similarities[j, i] = cosine_similarity
+    
+    # Identify and filter out gradients with low cosine similarity
+    aligned_gradients = []
+    for i in range(n):
+        if torch.mean(cosine_similarities[i]) >= angle_threshold:
+            aligned_gradients.append(gradients[i])
+    
+    # Aggregate the aligned gradients (using mean in this example)
+    if aligned_gradients:
+        aggregated_gradient = torch.mean(torch.stack(aligned_gradients), dim=0)
+    else:
+        # Fallback: if no aligned gradients, use simple mean of all gradients
+        aggregated_gradient = torch.mean(torch.stack(gradients), dim=0)
+    
+    # Return the aggregated gradient as a dictionary
+    return list_todict(aggregated_gradient.tolist(), args)
+
+
+
+
+def orderdict_tolist(w):
+    weight_dict = dict(w.items())
+    weight_list = []
+    for key in weight_dict.keys():
+        weight_list.extend(torch.flatten(weight_dict[key]).tolist())
+    return weight_list
+
+def list_todict(weight_list, args):
+    model = CustomCNN(args)  # Assuming CustomCNN is your model
+    state_dict = model.state_dict()
+    start_index = 0
+    for key, value in state_dict.items():
+        num_elements = value.numel()
+        reshaped_tensor = torch.tensor(weight_list[start_index:start_index + num_elements]).reshape(value.shape)
+        state_dict[key] = reshaped_tensor
+        start_index += num_elements
+    return state_dict
+
+
+def aggregate_mapping_layers(local_weights):
+    # Create a deep copy of the first client's weights as the base
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    
+    # Filter out mapping layer weights that need to be aggregated
+    mapping_layer_keys = [k for k in aggregated_weights.keys() if 'conv1' in k or 'conv2' in k or 'dense1' in k]
+
+    # Aggregate only the mapping layer weights
+    for key in mapping_layer_keys:
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    
+    # Return updated weights for each client
+    updated_weights_list = []
+    for client_weights in local_weights:
+        # Deep copy to keep the original structure
+        client_updated_weights = copy.deepcopy(client_weights)
+        
+        # Only update the aggregated mapping layer weights
+        for key in mapping_layer_keys:
+            client_updated_weights[key] = aggregated_weights[key]
+        
+        updated_weights_list.append(client_updated_weights)
+    
+    return updated_weights_list
+
+
+
+def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none', classes_distribution=None):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
     timestamp = time.time()
-    filename_wo = f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{timestamp}.txt'
-    filename_w = f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u{time}.txt'
+    """filename_wo = f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpga{args.alpha}_e_{args.num_users}u{timestamp}.txt'
+    filename_w = f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpga{args.alpha}_e_{args.num_users}u{time}.txt'
     accuracies_file_wo = open (filename_wo, 'w') #open(f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')
-    accuracies_file_w = open(filename_w, 'w') #open(f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')
+    accuracies_file_w = open(filename_w, 'w') #open(f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')"""
+    #filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt'
+    #create folder if not exist
+    # Create folder if it doesn't exist
+    if not args.classic_eval:
+        args.alg = 'FedProto_new' 
+    if not os.path.exists('../save2/'):
+        os.makedirs('../save2/')
+    if not os.path.exists('../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/'):
+        os.makedirs('../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/')
+        print('Created folder')
+    else:
+        print('Folder exists')
+    file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
+    # Open the file using the created file name
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
     global_protos = []
     idxs_users = np.arange(args.num_users)
 
     train_loss, train_accuracy = [], []
     global_model = copy.deepcopy(local_model_list[0])
-
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    local_weights_prev = []
+    acc_byclient_byclass = []
     for round in tqdm(range(args.rounds)):
         local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
         print(f'\n | Global Training Round : {round + 1} |\n')
 
         proto_loss = 0
         for idx in idxs_users:
-            local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
             
-            w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            
+            #w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            w, loss, acc, protos = local_model.update_weights_het_prox(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            
             agg_protos = agg_func(protos)
+            local_model_list[idx].load_state_dict(copy.deepcopy(w))
 
 
             local_weights.append(copy.deepcopy(w))
@@ -159,16 +747,23 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             local_model.load_state_dict(model_state_dict, strict=False)
             local_model_list[idx] = local_model"""
         if aggregated == 'none':
-            local_weights_list = local_weights
+            print('No aggregation')
+            """local_weights_list = local_weights
 
             for idx in idxs_users:
                 local_model = copy.deepcopy(local_model_list[idx])
                 local_model.load_state_dict(local_weights_list[idx], strict=True)
-                local_model_list[idx] =  local_model
+                local_model_list[idx] =  local_model"""
         elif aggregated == 'mapping_layers':
             print('Aggregating mapping layers')
             # Aggregate mapping layers
-            global_mapping_weights = aggregate_mapping_layers(local_mapping_weights)
+            w_list_agg = aggregate_mapping_layers(local_mapping_weights)
+
+            for idx, local_model in enumerate(local_model_list):
+                # Load the aggregated state dict back into the model
+                local_model.load_state_dict(w_list_agg[idx], strict=False)
+
+            """global_mapping_weights = aggregate_mapping_layers(local_mapping_weights)
 
             # Update local models' mapping layers with aggregated weights
             for idx in idxs_users:
@@ -176,7 +771,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 model_state_dict = local_model.state_dict()
                 model_state_dict.update(global_mapping_weights)
                 local_model.load_state_dict(model_state_dict, strict=False)
-                local_model_list[idx] = local_model
+                local_model_list[idx] = local_model"""
         elif aggregated == 'all_layers':
 
             global_weights = average_weights_(local_weights)
@@ -199,20 +794,98 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
-    # Verify that all clients have the same mapping layers
-    if not verify_mapping_layers_among_clients(local_model_list):
-        print('Mismatch found in mapping layers among clients.')
-    else:
-        print('All clients have identical mapping layers.')
-    acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
-    print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
-    print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
-    print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
-    accuracies_file_wo.write(str(acc_list_l))
-    accuracies_file_w.write(str(acc_list_g))
-    accuracies_file_wo.write('\n')
-    accuracies_file_w.write('\n')
-    for label in range(args.num_classes):
+        # Verify that all clients have the same mapping layers
+        """if not verify_mapping_layers_among_clients(local_model_list):
+            print('Mismatch found in mapping layers among clients.')
+        else:
+            print('All clients have identical mapping layers.')"""
+        if args.classic_eval:
+            acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+        else:
+            acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt_new(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos, classes_distribution)
+        print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+        print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+        print('For all users (with protos), mean of proto loss is {:.5f}, std of test loss is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+        #accuracies_file_wo.write(str(acc_list_l))
+        #accuracies_file_w.write(str(acc_list_g))
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = 0, 0, 0, 0, 0, 0, 0
+        acc_byclient_byclass = []
+        for idx in idxs_users:
+            if classic_eval:
+                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_ = test_inference_metrics_proto(args, local_model_list[idx], test_dataset, global_protos)
+            else:
+                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_ = test_inference_metrics_proto_new(args,idx, local_model_list[idx], test_dataset, global_protos, classes_distribution)
+            acc += acc_/args.num_users
+            f1 += f1_/args.num_users
+            precision += precision_/args.num_users
+            recall += recall_/args.num_users
+            acc_macro += acc_macro_/args.num_users
+            f1_macro += f1_macro_/args.num_users
+            loss += loss_/args.num_users
+            acc_byclient_byclass.append(acc_by_class_)
+        print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accuracies.append(acc)
+        f1_scores.append(f1)
+        recall_scores.append(recall)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        """for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+            print(f'Class {class_} acc: {acc}')"""
+
+    """acc_byclient_byclass = []
+    for user in range(args.num_users):
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            if classic_eval:
+                acc, loss = test_inference_by_attack_server_proto(args, local_model_list[user], test_dataset, class_)
+            else: 
+                acc, loss = test_inference_by_attack_server_proto_new(args, local_model_list[user], test_dataset, class_, classes_distribution)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)"""
+    """acc_byclass = []
+    for class_ in range(args.num_classes):
+        acc, loss = test_inference_by_attack_server_proto(args, global_model, test_dataset, class_)
+        acc_byclass.append(acc)"""
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    file.close()
+
+    """file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()"""
+
+    accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+    #accuracies_file_wo.write('\n')
+    #accuracies_file_w.write('\n')
+    """for label in range(args.num_classes):
         print("--------------------------------------------------------------------------")
         print(f'For class {label}')
         acc_list_l, acc_list_g, loss_list = test_inference_new_het_by_attack(args, local_model_list, test_dataset, user_groups_lt, global_protos, label)
@@ -222,7 +895,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         accuracies_file_wo.write(str(acc_list_l))
         accuracies_file_w.write(str(acc_list_g))
         accuracies_file_wo.write('\n')
-        accuracies_file_w.write('\n')
+        accuracies_file_w.write('\n')"""
     """for idx in idxs_users:
         acc, loss = test_inference(args, local_model_list[idx], test_dataset, global_protos)
         print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
@@ -234,10 +907,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     if args.dataset == 'mnist':
         save_protos(args, local_model_list, test_dataset, user_groups_lt)
     
-    accuracies_file_wo.close()
+    """accuracies_file_wo.close()
     accuracies_file_w.close()
     plot_fedproto_accuracies(filename_wo)
-    plot_fedproto_accuracies(filename_w)
+    plot_fedproto_accuracies(filename_w)"""
 
 
 def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list):
@@ -254,8 +927,11 @@ def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_gro
 
         proto_loss = 0
         for idx in idxs_users:
-            local_model = LocalUpdate(args=args, dataset=train_dataset, idxs=user_groups[idx])
-            w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
+            if args.alg == 'fedprox':
+                w, loss, acc, protos = local_model.update_weights_prox(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            else:
+                w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
             agg_protos = agg_func(protos)
 
             local_weights.append(copy.deepcopy(w))
@@ -282,14 +958,160 @@ def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_gro
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
     
-    acc_list_l, acc_list_g = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+    acc_list_l, acc_list_g = test_inference_new_het_lt_new(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos, classes_distribution)
     print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
     print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
 
-if __name__ == '__main__':
+def FedPCL(args,  train_dataset_list, test_dataset_list, user_groups, user_groups_test, backbone_list, local_model_list):
+    global_protos = {}
+    global_avg_protos = {}
+    local_protos = {}
+    if not os.path.exists('../save2/'):
+        os.makedirs('../save2/')
+    if not os.path.exists('../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/'):
+        os.makedirs('../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/')
+        print('Created folder')
+    else:
+        print('Folder exists')
+    file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
+    # Open the file using the created file name
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    global_protos = []
+    idxs_users = np.arange(args.num_users)
+
+    train_loss, train_accuracy = [], []
+    global_model = copy.deepcopy(local_model_list[0])
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    
+    local_weights_prev = []
+
+
+    for round in tqdm(range(args.rounds)):
+        print(f'\n | Global Training Round : {round} |\n')
+        local_weights, local_loss1, local_loss2, local_loss_total,  = [], [], [], []
+        idxs_users = np.arange(args.num_users)
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset_list, idx = idx, idxs=user_groups[idx], global_round=round)
+            w, w_urt, loss, protos = local_model.update_weights_fedpcl(args, idx, global_protos, global_avg_protos, backbone=backbone_list, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            agg_protos = agg_func(protos)
+            
+
+            local_weights.append(copy.deepcopy(w))
+            local_loss1.append(copy.deepcopy(loss['1']))
+            local_loss2.append(copy.deepcopy(loss['2']))
+            local_loss_total.append(copy.deepcopy(loss['total']))
+            #local_protos[idx] = copy.deepcopy(agg_protos)
+            local_protos[idx] = {k: copy.deepcopy(v.detach()) for k, v in agg_protos.items()}
+
+
+
+
+        for idx in idxs_users:
+            local_model_list[idx].load_state_dict(local_weights[idx])
+
+        # update global protos
+        global_avg_protos = proto_aggregation(local_protos)
+        global_protos = copy.deepcopy(local_protos)
+        loss_avg = sum(local_loss_total) / len(local_loss_total)
+        print('| Global Round : {} | Avg Loss: {:.3f}'.format(round, loss_avg))
+
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = 0, 0, 0, 0, 0, 0, 0
+        acc_by_class_by_user = []
+        with torch.no_grad():
+            for idx in range(args.num_users):
+                print('Test on user {:d}'.format(idx))
+                local_test = LocalTest(args=args, dataset=test_dataset_list, idxs=user_groups_test[idx])
+                local_model_for_test = copy.deepcopy(local_model_list[idx])
+                local_model_for_test.load_state_dict(local_weights[idx], strict=True)
+                local_model_for_test.eval()
+                acc, loss = local_test.test_inference_twoway(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_  = local_test.test_inference_metrics(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+                acc += acc_/args.num_users
+                f1 += f1_/args.num_users
+                precision += precision_/args.num_users
+                recall += recall_/args.num_users
+                acc_macro += acc_macro_/args.num_users
+                f1_macro += f1_macro_/args.num_users
+                loss += loss_/args.num_users
+                acc_by_class_by_user.append(acc_by_class_)
+            print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+            #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+            accuracies.append(acc)
+            f1_scores.append(f1)
+            recall_scores.append(recall)
+            precision_scores.append(precision)
+            f1_macros.append(f1_macro)
+            acc_macros.append(acc_macro)
+        acc_mtx = torch.zeros([args.num_users])
+        loss_mtx = torch.zeros([args.num_users])
+    """with torch.no_grad():
+        for idx in range(args.num_users):
+            print('Test on user {:d}'.format(idx))
+            local_test = LocalTest(args = args, dataset = test_dataset_list, idxs = user_groups_test[idx])
+            local_model_for_test = copy.deepcopy(local_model_list[idx])
+            local_model_for_test.load_state_dict(local_weights[idx], strict=True)
+            local_model_for_test.eval()
+            acc, loss = local_test.test_inference_twoway(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+            acc_mtx[idx] = acc
+            loss_mtx[idx] = loss"""
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_by_class_by_user))
+    file.close()
+
+    """file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()"""
+
+    accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+
+    return acc_mtx
+
+
+def Federated(args):
     start_time = time.time()
 
-    args = args_parser()
+    
     exp_details(args)
 
     # set random seeds
@@ -307,12 +1129,13 @@ if __name__ == '__main__':
         args.num_classes = 8
     elif args.dataset == 'xiiotid':
         args.num_features = 74
-        args.num_classes = 10
+        args.num_classes = 9
     elif args.dataset == '5gnidd':
         args.num_features = 34
         args.num_classes = 7
     # load dataset and user groups
     n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
+    print("n_list", n_list)
     if args.dataset == 'mnist':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev - 1, args.num_users)
     elif args.dataset == 'cifar10':
@@ -323,6 +1146,7 @@ if __name__ == '__main__':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
     elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    print("k_list", k_list)
 
     train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
 
@@ -402,21 +1226,289 @@ if __name__ == '__main__':
 
     # Print classes_distribution for debugging
     print(classes_distribution)
-
+    
     # Save classes distribution to a file
     #file_path = '../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt'
     #with open(file_path, 'w') as f:
-    with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+    file_folder = '../save2/_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    file_ext = '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + args.num_users 
+    #with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}_e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+    with open (file_folder + 'classes_distribution' + file_ext + '.txt', 'w') as f:
         for idx, user_classes in classes_distribution:
             f.write(f"User {idx}:\n")
             for label, count in user_classes.items():
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")
-    """if args.mode == 'task_heter':
-        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)
+
+
+    if args.alg == 'fedavg' or args.alg == 'fedprox':
+        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+    elif args.alg == 'fedproto':
+        aggregated = 'none'
+        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+    elif args.alg == 'fedpcl':
+        backbone = Embedder(args)
+        local_model_list = [Proj(args=args) for i in range(args.num_users)]
+        acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+        print('For all users, mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_mtx),np.std(acc_mtx))   )
+    elif args.alg == 'fedopt':
+        print('Not implemented yet')
     else:
-        FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list)"""
-    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-    aggregated_layers = ['none', 'mapping_layers', 'all_layers']
-    aggregated = aggregated_layers[2]
-    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated)
+        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+
+if __name__ == '__main__':
+    start_time = time.time()
+
+    args = args_parser()
+    exp_details(args)
+
+    # set random seeds
+    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if args.device == 'cuda':
+        torch.cuda.set_device(args.gpu)
+        torch.cuda.manual_seed(args.seed)
+        torch.manual_seed(args.seed)
+    else:
+        torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if args.dataset == 'ciciot':
+        args.num_features = 46
+        args.num_classes = 8
+    elif args.dataset == 'xiiotid':
+        args.num_features = 74
+        args.num_classes = 9
+    elif args.dataset == '5gnidd':
+        args.num_features = 34
+        args.num_classes = 7
+    # load dataset and user groups
+    n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
+    print("n_list", n_list)
+    if args.dataset == 'mnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev - 1, args.num_users)
+    elif args.dataset == 'cifar10':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset =='cifar100':
+        k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
+    elif args.dataset == 'femnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    print("k_list", k_list)
+
+    train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+
+    # Build models
+    local_model_list = []
+    for i in range(args.num_users):
+        if args.dataset == 'mnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+
+            local_model = CNNMnist(args=args)
+
+        elif args.dataset == 'femnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+            local_model = CNNFemnist(args=args)
+
+        elif args.dataset == 'cifar100' or args.dataset == 'cifar10':
+            if args.mode == 'model_heter':
+                if i<10:
+                    args.stride = [1,4]
+                else:
+                    args.stride = [2,2]
+            else:
+                args.stride = [2, 2]
+            resnet = resnet18(args, pretrained=False, num_classes=args.num_classes)
+            initial_weight = model_zoo.load_url(model_urls['resnet18'])
+            local_model = resnet
+            initial_weight_1 = local_model.state_dict()
+            for key in initial_weight.keys():
+                if key[0:3] == 'fc.' or key[0:5]=='conv1' or key[0:3]=='bn1':
+                    initial_weight[key] = initial_weight_1[key]
+
+            local_model.load_state_dict(initial_weight)
+        elif args.dataset == 'ciciot':
+            args.num_features = 46
+            args.num_classes = 8
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'xiiotid':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == '5gnidd':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'cicids2017':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        local_model.to(args.device)
+        local_model.train()
+        local_model_list.append(local_model)
+        global_model.to(args.device)
+        global_model.train()
+
+    unique_labels = set(range(args.num_classes))
+    # Save classes distribution between clients
+    classes_distribution = []
+    for idx, user in user_groups.items():
+        user_classes = {}
+        for data_idx in user:
+            label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+            if label not in user_classes:
+                user_classes[label] = 0
+            user_classes[label] += 1
+        classes_distribution.append((idx, user_classes))
+
+    # Print classes_distribution for debugging
+    """print(classes_distribution)
+    for alpha in [0.75]#, 0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:
+        args.alpha =alpha
+        args.alg = 'fedproto'
+        aggregated = 'none'
+        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                
+        #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+        if args.alg != 'beforefl':
+            file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+            file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            file_name_before_fl = file_folder_before + file_ext + '.txt'
+            file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+            file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+            #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+            #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            #output_file_name = file_folder + file_ext + '.pdf'
+
+            plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)            """
+    
+    # Save classes distribution to a file
+    #file_path = '../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt'
+    #with open(file_path, 'w') as f:
+    """with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}_e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+        for idx, user_classes in classes_distribution:
+            f.write(f"User {idx}:\n")
+            for label, count in user_classes.items():
+                f.write(f"  Class {label}: {count} instances\n")
+            f.write("\n")"""
+            
+    for alpha in [0.75, 0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+        args.alpha = alpha
+        train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+        unique_labels = set(range(args.num_classes))
+        # Save classes distribution between clients
+        classes_distribution = []
+        for idx, user in user_groups.items():
+            user_classes = {}
+            for data_idx in user:
+                label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+                if label not in user_classes:
+                    user_classes[label] = 0
+                user_classes[label] += 1
+            classes_distribution.append((idx, user_classes))
+
+        # Print classes_distribution for debugging
+        print(classes_distribution)
+        if args.attack_type == 'none':
+            file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)
+        else:
+            file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)
+        
+        file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+        if not os.path.exists('../save_attack'):
+            os.makedirs('../save_attack')
+        if not os.path.exists('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) ):
+            os.makedirs('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) )
+        if not os.path.exists(file_folder):
+            os.makedirs(file_folder)
+        with open (file_folder + 'classes_distribution_' + file_ext + '.txt', 'w') as f:
+            for idx, user_classes in classes_distribution:
+                f.write(f"User {idx}:\n")
+                for label, count in user_classes.items():
+                    f.write(f"  Class {label}: {count} instances\n")
+                f.write("\n")
+        
+
+        """for alg in ['beforefl', 'fedavg', 'krum', 'median','trimmed_mean','fedprox']:#['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
+            args.alg = alg
+            args.attack_type = 'label-flipping'
+            for attack_perc in [0.25,0.5,0.75]:
+                args.flip_ratio = attack_perc
+                for attackers in [2,6]:
+                    args.num_attackers = attackers"""
+        #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
+        for alg in ['beforefl','fedproto', 'fedavg', 'fedprox']:
+                    args.alg = alg
+                    classic_eval = True
+            
+
+
+                    print('*****************************Running algorithm********************************: ', args.alg)
+                    if args.alg == 'fedavg' or args.alg == 'fedprox':
+                        print('Running federated averaging')
+                        global_model = CustomCNN(args)
+                        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    elif args.alg == 'fedproto':
+                        aggregated = 'all_layers' #'mapping_layers' #'none'
+                        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                    elif args.alg == 'fedpcl':
+                        backbone = Embedder(args)
+                        local_model_list = [Proj(args=args) for i in range(args.num_users)]
+                        acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+                        acc_mean = acc_mtx.mean().item()
+                        acc_std = acc_mtx.std().item()
+                        print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
+
+                    elif args.alg == 'fedopt':
+                        print('Not implemented yet')
+                    elif args.alg == 'beforefl':
+                        acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                    else:
+                        global_model = CustomCNN(args)
+                        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    
+                    #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    if args.alg != 'beforefl':
+                        if args.attack_type == 'none':
+                            file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+                        else:
+                            file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+                        file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                        file_name_before_fl = file_folder_before + file_ext + '.txt'
+                        if args.attack_type == 'none':
+                            file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
+                        else:
+                            file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
+                        #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                        file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                        file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+                        #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                        #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                        #output_file_name = file_folder + file_ext + '.pdf'
+
+                        plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
+                        file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                        file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
+                        #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
+                        if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
+                        
+                            plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)

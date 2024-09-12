@@ -132,6 +132,28 @@ class Lenet(nn.Module):
 
         return F.log_softmax(x, dim=1), x1
 
+
+
+class DenseModel(nn.Module):
+    def __init__(self, args):
+        super(DenseModel, self).__init__()
+        # Define the layers
+        input_size = args.num_features
+        output_size = args.num_classes
+        self.dense1 = nn.Linear(input_size, 128)
+        self.dense2 = nn.Linear(128, 64)
+        self.dense3 = nn.Linear(64, 32)
+        self.output_layer = nn.Linear(32, output_size)
+    
+    def forward(self, x):
+        # Forward pass with ReLU activations
+        x = F.relu(self.dense1(x))
+        x1 = F.relu(self.dense2(x))
+
+        x = F.relu(self.dense3(x1))
+        x = F.log_softmax(self.output_layer(x), dim=1)
+        return x, x1
+
 class CustomCNN(nn.Module):
     def __init__(self, args):
         super(CustomCNN, self).__init__()
@@ -141,6 +163,8 @@ class CustomCNN(nn.Module):
             feature_map = 9
         elif args.dataset == '5gnidd':
             feature_map = 6
+        elif args.dataset == 'cicids2017':
+            feature_map = 17
         else:
             feature_map = 16
         self.reshape_layer = nn.Identity()  # No reshape needed as PyTorch will handle the shape during forward pass
@@ -167,3 +191,62 @@ class CustomCNN(nn.Module):
         x = self.dense2(x)
 
         return F.log_softmax(x, dim=1), x1 
+
+
+
+class Proj(nn.Module):
+    def __init__(self, args):
+        super(Proj, self).__init__()
+        if args.dataset == 'ciciot':
+            feature_map = 9
+        elif args.dataset == '5gnidd':
+            feature_map = 6
+        else:
+            feature_map = 16
+        self.fc1 = nn.Linear(128 * feature_map, 128)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(128, args.num_classes)
+
+    def forward(self, x):
+        x1 = F.relu(self.fc1(x))
+        x1 = F.normalize(x1, dim=1)
+        x = F.relu(self.fc2(x1))
+        x = self.dropout2(x1)
+        x = self.fc2(x)
+        return F.log_softmax(x, dim=1), x1
+
+class Embedder (nn.Module):
+    def __init__(self, args):
+        super(Embedder, self).__init__()
+        num_features = args.num_features
+        print("num_features", num_features)
+        num_instances = args.num_classes
+        if args.dataset == 'ciciot':
+            feature_map = 9
+        elif args.dataset == '5gnidd':
+            feature_map = 6
+        else:
+            feature_map = 16
+        self.reshape_layer = nn.Identity()  # No reshape needed as PyTorch will handle the shape during forward pass
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=64, kernel_size=5)
+        self.maxpool1 = nn.MaxPool1d(kernel_size=2)
+        self.dropout1 = nn.Dropout(0.2)
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3)
+        self.maxpool2 = nn.MaxPool1d(kernel_size=2)
+        self.flatten = nn.Flatten()
+
+
+    def forward(self, x):
+        #print("x shape_________before__", x.shape)
+        x = x.view(x.size(0), 1, -1)  # Reshape to (batch_size, 1, num_features)
+        #print("x shape___________", x.shape)
+        #batch_size, num_images, num_features = x.size()
+        #x = x.view(batch_size * num_images, 1, num_features)
+        x = F.relu(self.conv1(x))
+        x = self.maxpool1(x)
+        x = self.dropout1(x)
+        x = F.relu(self.conv2(x))
+        x = self.maxpool2(x)
+        x = self.flatten(x)
+        #print("x shape___________", x.shape)
+        return x

@@ -7,9 +7,9 @@ import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal, mnist_noniid_lt
 from sampling import femnist_iid, femnist_noniid, femnist_noniid_unequal, femnist_noniid_lt
-from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all
+from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all, xiiotid_noniid_dirichlet, xiiotid_noniid_dirichlet2
 import femnist
-from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data
+from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data, load_data_cicids2017
 import numpy as np
 
 trans_cifar10_train = transforms.Compose([transforms.RandomCrop(32, padding=4),
@@ -130,11 +130,13 @@ def get_dataset(args, n_list, k_list):
             train_dataset, test_dataset = load_data_cic_iot(args)
         elif args.dataset == 'xiiotid':
             train_dataset, test_dataset = load_data_x_iiotid(args)
+        elif args.dataset == 'cicids2017':
+            train_dataset, test_dataset = load_data_cicids2017(args)
         if args.iid:
             user_groups, classes_list = xiiotid_iid(train_dataset, args.num_users)
             user_groups_lt = mnist_iid(test_dataset, args.num_users)
             classes_list_gt = classes_list
-        else:
+        elif args.dirichlet==0:
             if args.unequal:
                 raise NotImplementedError()
             else:
@@ -142,10 +144,31 @@ def get_dataset(args, n_list, k_list):
                 #user_groups_lt = xiiotid_noniid_lt(args, test_dataset, args.num_users, n_list, k_list, classes_list)
                 user_groups_lt = xiotid_noniid_lt_all(args,test_dataset, args.num_users)
                 classes_list_gt = classes_list
+        else:
+            user_groups, classes_list = xiiotid_noniid_dirichlet2(args, train_dataset, args.num_users, args.alpha)
+            user_groups_lt = xiotid_noniid_lt_all(args,test_dataset, args.num_users)
+            classes_list_gt = classes_list
         #user_groups = mnist_iid(train_dataset, args.num_users)
         #user_groups_lt = user_groups
         #classes_list, classes_list_gt = [], []
     return train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt
+
+def add_noise_img(img, scale, perturb_coe, noise_type):
+    scale_scalar = scale
+    scale = torch.full(size=img.shape, fill_value=scale_scalar, dtype=torch.float32)
+    if noise_type == "gaussian":
+        dist = torch.distributions.normal.Normal(0, scale)
+    elif noise_type == "laplacian":
+        dist = torch.distributions.laplace.Laplace(0, scale)
+    elif noise_type == "exponential":
+        rate = 1 / scale
+        dist = torch.distributions.exponential.Exponential(rate)
+    else:
+        dist = torch.distributions.normal.Normal(0, scale)
+    noise = dist.sample()
+
+    return img * (1 - perturb_coe) + noise
+
 def average_weights_(w):
     """
     Returns the average of the weights.
@@ -239,17 +262,17 @@ def agg_func(protos):
     """
     Returns the average of the weights.
     """
-
-    for [label, proto_list] in protos.items():
+    protos_ = protos.copy()
+    for [label, proto_list] in protos_.items():
         if len(proto_list) > 1:
             proto = 0 * proto_list[0].data
             for i in proto_list:
                 proto += i.data
-            protos[label] = proto / len(proto_list)
+            protos_[label] = proto / len(proto_list)
         else:
-            protos[label] = proto_list[0]
+            protos_[label] = proto_list[0]
 
-    return protos
+    return protos_
 
 def proto_aggregation(local_protos_list):
     agg_protos_label = dict()
