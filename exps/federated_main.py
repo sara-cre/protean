@@ -26,11 +26,11 @@ from resnet import resnet18
 from options import args_parser
 from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack, test_inference_new_het_lt_new, test_inference_new_het_lt_new_op, test_inference_metrics, test_inference_by_attack_server
 from models import CNNMnist, CNNFemnist, CustomCNN
-from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem
+from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem, proto_anomaly_detection
 from plot import plot_fl_accuracies, plot_fedproto_accuracies, plot_metrics
 import time
 import time
-from models import Proj, Embedder
+from models import Proj, Embedder, DenseModel
 from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
 from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
 
@@ -115,11 +115,17 @@ def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
     precision_file=open(file_folder + 'precision_' + file_ext + '.txt', 'w')
     acc_byclient_byclass = []
     for user_id in range(args.num_users):
-        local_model = CustomCNN(args=args)
+        if args.dataset == 'cicids2017':
+            local_model = DenseModel(args=args)
+        else:
+            local_model = CustomCNN(args=args)
         model = copy.deepcopy(local_model)
         local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[user_id], global_round=0)
         weight, train_losss, train_acc = local_model.update_weights(args, user_id, model=model, global_round=0)
-        test_model = CustomCNN(args=args)
+        if args.dataset == 'cicids2017':
+            test_model = DenseModel(args=args)
+        else:
+            test_model = CustomCNN(args=args)
         test_model.load_state_dict(weight)
         #acc, loss = test_inference_metrics(args, test_model, test_dataset,)
         acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, test_model, test_dataset)
@@ -186,8 +192,12 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
         #sum of delta_y / sample size
         delta_x = copy.deepcopy(global_model.state_dict())
         #model for local control varietes
-        local_controls = [CustomCNN(args=args) for i in range(args.num_users)]
-        control_global = CustomCNN(args=args)
+        if args.dataset == 'cicids2017':
+            control_local = [DenseModel(args=args) for i in range(args.num_users)]
+            control_global = DenseModel(args=args)
+        else:
+            local_controls = [CustomCNN(args=args) for i in range(args.num_users)]
+            control_global = CustomCNN(args=args)
         control_weights = control_global.state_dict()
         #local_models = [cifarCNN(args=args) for i in range(args.num_users)]
         
@@ -205,7 +215,10 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
     f1_macros = []
     acc_macros = []
     fpr_scores = []
-    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    if args.dataset == 'cicids2017':
+        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    else:
+        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
     local_weights_prev = []
     
 
@@ -621,7 +634,10 @@ def orderdict_tolist(w):
     return weight_list
 
 def list_todict(weight_list, args):
-    model = CustomCNN(args)  # Assuming CustomCNN is your model
+    if args.dataset == 'cicids2017':
+        model = DenseModel(args)
+    else:
+        model = CustomCNN(args)  # Assuming CustomCNN is your model
     state_dict = model.state_dict()
     start_index = 0
     for key, value in state_dict.items():
@@ -680,7 +696,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         print('Created folder')
     else:
         print('Folder exists')
-    file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    if args.attack_type == 'none':
+        file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    else:
+        file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/' + args.alg + '/'
     if not os.path.exists(file_folder):
         os.makedirs(file_folder)
     
@@ -705,7 +724,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     f1_macros = []
     acc_macros = []
     fpr_scores = []
-    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    if args.dataset == 'cicids2017':
+        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    else:
+        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
     local_weights_prev = []
     acc_byclient_byclass = []
     for round in tqdm(range(args.rounds)):
@@ -773,8 +795,21 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 local_model.load_state_dict(model_state_dict, strict=False)
                 local_model_list[idx] = local_model"""
         elif aggregated == 'all_layers':
+            if args.proto_robust:
+                # Perform anomaly detection before aggregating prototypes
+                trusted_clients = proto_anomaly_detection(local_protos, args)
 
-            global_weights = average_weights_(local_weights)
+                # Update local_model_list to only include trusted clients
+                # For simplicity, we will use indices of trusted clients
+                trusted_idxs = [idx for idx in idxs_users if idx in trusted_clients]
+                print("-----------------------------------------")
+                print(f'Trusted clients: {trusted_idxs}')
+                print("-----------------------------------------")
+                trusted_local_weights = [local_weights[i] for i, idx in enumerate(idxs_users) if idx in trusted_clients]
+                # Aggregate weights
+                global_weights = average_weights_(trusted_local_weights)
+            else:
+                global_weights = average_weights_(local_weights)
             # update global weights
 
             
@@ -789,8 +824,11 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 local_model.load_state_dict(local_weights_list[idx], strict=True)
                 local_model_list[idx] = global_model #local_model
 
-        # update global weights
-        global_protos = proto_aggregation(local_protos)
+        # update global protos
+        if args.proto_robust:
+            global_protos = proto_aggregation({idx: local_protos[idx] for idx in trusted_idxs})
+        else:
+            global_protos = proto_aggregation(local_protos)
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)
@@ -1284,6 +1322,9 @@ if __name__ == '__main__':
     elif args.dataset == '5gnidd':
         args.num_features = 34
         args.num_classes = 7
+    elif args.dataset == 'cicids2017':
+        args.num_features = 81
+        args.num_classes = 25
     # load dataset and user groups
     n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
     print("n_list", n_list)
@@ -1295,11 +1336,11 @@ if __name__ == '__main__':
         k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
     elif args.dataset == 'femnist':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
-    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd':
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd' or args.dataset == 'cicids2017':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
     print("k_list", k_list)
 
-    train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+    #train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
 
     # Build models
     local_model_list = []
@@ -1358,8 +1399,8 @@ if __name__ == '__main__':
             local_model = CustomCNN(args=args)
             global_model = CustomCNN(args=args)
         elif args.dataset == 'cicids2017':
-            local_model = CustomCNN(args=args)
-            global_model = CustomCNN(args=args)
+            local_model = DenseModel(args=args)
+            global_model = DenseModel(args=args)
         local_model.to(args.device)
         local_model.train()
         local_model_list.append(local_model)
@@ -1368,7 +1409,7 @@ if __name__ == '__main__':
 
     unique_labels = set(range(args.num_classes))
     # Save classes distribution between clients
-    classes_distribution = []
+    """classes_distribution = []
     for idx, user in user_groups.items():
         user_classes = {}
         for data_idx in user:
@@ -1376,7 +1417,7 @@ if __name__ == '__main__':
             if label not in user_classes:
                 user_classes[label] = 0
             user_classes[label] += 1
-        classes_distribution.append((idx, user_classes))
+        classes_distribution.append((idx, user_classes))"""
 
     # Print classes_distribution for debugging
     """print(classes_distribution)
@@ -1410,7 +1451,7 @@ if __name__ == '__main__':
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
             
-    for alpha in [0.75, 0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+    for alpha in [0.75, 0.5, 0.25]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
         args.alpha = alpha
         train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
         unique_labels = set(range(args.num_classes))
@@ -1455,20 +1496,32 @@ if __name__ == '__main__':
                 for attackers in [2,6]:
                     args.num_attackers = attackers"""
         #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['beforefl','fedproto', 'fedavg', 'fedprox']:
+        for alg in ['fedproto']:
                     args.alg = alg
                     classic_eval = True
+                    """args.attack_type = 'label-flipping'
+                    for attack_perc in [0.25]:#,0.5,0.75]:
+                        args.flip_ratio = attack_perc
+                        print('*****************************flip ratio********************************: ', args.flip_ratio)
+                        for attackers in [2]:#,6]:
+                            args.num_attackers = attackers"""
             
 
 
                     print('*****************************Running algorithm********************************: ', args.alg)
                     if args.alg == 'fedavg' or args.alg == 'fedprox':
                         print('Running federated averaging')
-                        global_model = CustomCNN(args)
+                        if args.dataset == 'cicids2017':
+                            global_model = DenseModel(args)
+                        else:
+                            global_model = CustomCNN(args)
                         Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
                     elif args.alg == 'fedproto':
-                        aggregated = 'all_layers' #'mapping_layers' #'none'
-                        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                        aggregated = 'all_layers' #'none'#'mapping_layers' #
+                        if args.dataset == 'cicids2017':
+                            local_model_list = [DenseModel(args) for i in range(args.num_users)]
+                        else:
+                            local_model_list = [CustomCNN(args) for i in range(args.num_users)]
                         FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
                     elif args.alg == 'fedpcl':
                         backbone = Embedder(args)
@@ -1483,7 +1536,10 @@ if __name__ == '__main__':
                     elif args.alg == 'beforefl':
                         acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
                     else:
-                        global_model = CustomCNN(args)
+                        if args.dataset == 'cicids2017':
+                            global_model = DenseModel(args)
+                        else:
+                            global_model = CustomCNN(args)
                         Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
                     
                     #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)

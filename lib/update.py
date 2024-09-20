@@ -35,6 +35,17 @@ def contrastive_loss(proto1, proto2, label, margin=1.0):
 
 
 
+def get_loss_function(loss_name):
+    if loss_name == 'nlloss':
+        return nn.NLLLoss()
+    elif loss_name == 'cross_entropy':
+        return nn.CrossEntropyLoss()
+    elif loss_name == 'mse':
+        return nn.MSELoss()
+    elif loss_name == 'bce':
+        return nn.BCELoss()
+    else:
+        raise ValueError(f"Unsupported loss function: {loss_name}")
 
 
 class ScaffoldOptimizer(Optimizer):
@@ -101,7 +112,7 @@ class LocalUpdate(object):
         self.global_round = global_round
         self.trainloader = self.train_val_test(dataset, list(idxs))
         self.device = args.device
-        self.criterion = nn.NLLLoss().to(self.device)
+        self.criterion = get_loss_function(args.criterion).to(self.device)
         self.idxs = idxs
         
         self.dataset = dataset
@@ -1206,7 +1217,7 @@ class LocalTest(object):
     def fine_tune(self, args, dataset, idxs, model):
         trainloader = self.test_split(dataset, list(idxs))
         device = args.device
-        criterion = nn.NLLLoss().to(device)
+        criterion = get_loss_function(args.criterion).to(device)
         if args.optimizer == 'sgd':
             optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.5)
         elif args.optimizer == 'adam':
@@ -1229,7 +1240,7 @@ class LocalTest(object):
 
     def test_inference_twoway(self, idx, args, global_protos, local_protos, backbone_list, local_model):
         device = args.device
-        criterion = nn.NLLLoss().to(device)
+        criterion = get_loss_function(args.criterion).to(device)
         loss_mse = nn.MSELoss()
 
         model = local_model
@@ -1269,7 +1280,7 @@ class LocalTest(object):
 
     def test_inference_metrics(self, idx, args, global_protos, local_protos, backbone_list, local_model):
         device = args.device
-        criterion = nn.NLLLoss().to(device)
+        criterion = get_loss_function(args.criterion).to(device)
         loss_mse = nn.MSELoss()
 
         model = local_model
@@ -1375,7 +1386,7 @@ def test_inference(args, model, test_dataset, global_protos=[]):
     loss, total, correct = 0.0, 0.0, 0.0
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=args.local_bs,
                             shuffle=False)
 
@@ -1403,7 +1414,7 @@ def test_inference_new(args, local_model_list, test_dataset, classes_list, globa
     loss, total, correct = 0.0, 0.0, 0.0
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     for batch_idx, (images, labels) in enumerate(testloader):
@@ -1447,7 +1458,7 @@ def test_inference_new_cifar(args, local_model_list, test_dataset, classes_list,
     loss, total, correct = 0.0, 0.0, 0.0
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     for batch_idx, (images, labels) in enumerate(testloader):
@@ -1537,7 +1548,7 @@ def test_inference_new_het_by_attack(args, local_model_list, test_dataset,user_g
     loss, total, correct = 0.0, 0.0, 0.0
     loss_mse = nn.MSELoss()
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_g = []
     acc_list_l = []
@@ -1624,7 +1635,7 @@ def test_inference_new_het_by_attack_new(args, local_model_list, test_dataset,us
     loss, total, correct = 0.0, 0.0, 0.0
     loss_mse = nn.MSELoss()
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_g = []
     acc_list_l = []
@@ -1757,7 +1768,7 @@ def test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list
     loss_mse = nn.MSELoss()
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_g = []
     acc_list_l = []
@@ -1840,7 +1851,7 @@ def test_inference_new_het_lt_new(args, local_model_list, test_dataset, classes_
     loss_mse = nn.MSELoss()
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_g = []
     acc_list_l = []
@@ -1999,7 +2010,7 @@ def test_inference_new_het_lt_new_op(args, local_model_list, test_dataset, class
     loss_mse = nn.MSELoss()
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_g = []
     acc_list_l = []
@@ -2140,7 +2151,7 @@ def save_protos(args, local_model_list, test_dataset, user_groups_gt):
     loss, total, correct = 0.0, 0.0, 0.0
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     agg_protos_label = {}
     for idx in range(args.num_users):
@@ -2241,7 +2252,7 @@ def test_inference_by_attack_all_clients(args, local_model_list, test_dataset, a
     loss, total, correct = 0.0, 0.0, 0.0
     loss_mse = nn.MSELoss()
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
     acc_list_l = []
     loss_list = []
@@ -2281,18 +2292,22 @@ def test_inference_by_attack_server(args, model, test_dataset, attack_label=0):
     loss, total, correct = 0.0, 0.0, 0.0
     loss_mse = nn.MSELoss()
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
 
 
     loss, total, correct = 0.0, 0.0, 0.0
     model.to(args.device)
+    model.eval()
     test_dataset_filtered = [(images, labels) for images, labels in test_dataset if (labels == attack_label).any().item()]
+    if len(test_dataset_filtered) == 0:
+        return 0, 0
     test_loader = DataLoader(test_dataset_filtered, batch_size=64, shuffle=True)
     #test_loader_filtered = [(images, labels) for images, labels in test_loader if (labels == attack_label).any().item()]
     #print("len test_loader_filtered: ", len(test_loader))
     for batch_idx, (images, labels) in enumerate(test_loader):
         images, labels = images.to(device), labels.to(device)
         model.zero_grad()
+        torch.no_grad()
         outputs, protos = model(images)
 
         batch_loss = criterion(outputs, labels)
@@ -2319,7 +2334,7 @@ def test_inference_all_classes(args, model, test_dataset):
     accs = []
     all_labels, all_preds = [], []
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=args.local_bs, shuffle=False)
     print("len testloader: ", len(testloader))
     model.to(device)
@@ -2352,7 +2367,7 @@ def test_inference_metrics(args, model, test_dataset):
     """
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=args.local_bs, shuffle=False)
     print("len testloader: ", len(testloader))
     model.to(device)
@@ -2441,7 +2456,7 @@ def test_inference_metrics_proto(args, model, test_dataset, global_protos=[], us
     print("************test_inference_metrics_proto************")
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=args.local_bs)
     print("len testloader: ", len(testloader))
     model.to(device)
@@ -2580,7 +2595,7 @@ def test_inference_metrics_proto_new(args, user, model, test_dataset, global_pro
     """
 
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     testloader = DataLoader(test_dataset, batch_size=args.local_bs, shuffle=False)
     print("len testloader: ", len(testloader))
     model.to(device)
@@ -2735,7 +2750,7 @@ def test_inference_by_attack_server_proto(args, model, test_dataset, attack_labe
     """
     print("*****************test_inference_by_attack_server_proto*****************")
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     test_dataset_f = [(images, labels) for images, labels in test_dataset if (labels == attack_label).any().item()]
     testloader = DataLoader(test_dataset_f, batch_size=args.local_bs, shuffle=False)
     print("len testloader: ", len(testloader))
@@ -2810,7 +2825,7 @@ def test_inference_by_attack_server_proto_new (args, model, test_dataset, attack
     print("Distributions: ", distributions)
     loss_mse = nn.MSELoss()
     device = args.device
-    criterion = nn.NLLLoss().to(device)
+    criterion = get_loss_function(args.criterion).to(device)
     loss, total, correct = 0.0, 0, 0
     model.to(args.device)
     test_dataset_filtered = [(images, labels) for images, labels in test_dataset if (labels == attack_label).any().item()]

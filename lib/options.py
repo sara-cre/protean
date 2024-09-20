@@ -23,6 +23,8 @@ def args_parser():
                         help='learning rate')
     parser.add_argument('--momentum', type=float, default=0.5,
                         help='SGD momentum (default: 0.5)')
+    parser.add_argument('--criterion', type=str, default='nlloss',
+                        help='training loss function')
 
     # model arguments
     parser.add_argument('--model', type=str, default='cnn', help='model name')
@@ -87,6 +89,8 @@ def args_parser():
     parser.add_argument('--flip_ratio', type=float, default=0.1, help='flipping ratio')
     parser.add_argument('--num_attackers', type=float, default=1, help='number of attackers')
     parser.add_argument('--attack_round', type=int, default=0, help='attack round')
+
+    parser.add_argument('--proto_robust', type=bool, default=False, help='proto robust')
     
     parser.add_argument('--mu', type=float, default=0.01, help='mu for fedprox')
     args = parser.parse_args()

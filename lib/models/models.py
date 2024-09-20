@@ -134,9 +134,9 @@ class Lenet(nn.Module):
 
 
 
-class DenseModel(nn.Module):
+class DenseModel_(nn.Module):
     def __init__(self, args):
-        super(DenseModel, self).__init__()
+        super(DenseModel_, self).__init__()
         # Define the layers
         input_size = args.num_features
         output_size = args.num_classes
@@ -152,6 +152,32 @@ class DenseModel(nn.Module):
 
         x = F.relu(self.dense3(x1))
         x = F.log_softmax(self.output_layer(x), dim=1)
+        return x, x1
+
+# Define the Improved Model
+class DenseModel(nn.Module):
+    def __init__(self, args):
+        input_size = args.num_features
+        output_size = args.num_classes
+        super(DenseModel, self).__init__()
+        self.fc1 = nn.Linear(input_size, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.dropout1 = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(512, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.dropout2 = nn.Dropout(0.5)
+        self.fc3 = nn.Linear(256, 128)
+        self.bn3 = nn.BatchNorm1d(128)
+        self.dropout3 = nn.Dropout(0.5)
+        self.fc4 = nn.Linear(128, output_size)
+    def forward(self, x):
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = self.dropout1(x)
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = self.dropout2(x)
+        x1 = F.relu(self.bn3(self.fc3(x)))
+        x = self.dropout3(x1)
+        x = self.fc4(x)
         return x, x1
 
 class CustomCNN(nn.Module):

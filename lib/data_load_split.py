@@ -20,6 +20,9 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 from sklearn.utils import resample
+from collections import Counter
+import gc  # Garbage collector
+import glob
 
 
 from poisoning import label_flipping_untargeted, flip_labels
@@ -74,9 +77,174 @@ def sample_within_range(group, min_samples, max_samples):
 def sample_with_max(group, max_samples):
     return resample(group, replace=False, n_samples=min(len(group), max_samples), random_state=42)
 
-
-
 def load_data_cicids2017(args):
+
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
+
+    # Function to read data in chunks
+    def load_data_in_chunks(file_list, chunk_size):
+        for file in file_list:
+            for chunk in pd.read_csv(file, chunksize=chunk_size, low_memory=False):
+                yield chunk
+
+    # Update this path to where your CICIDS2017 CSV files are located
+    path = '../dataset/cicids2017/*.csv'
+    file_list = glob.glob(path)
+
+    print(f'Found {len(file_list)} CSV files.')
+
+    if len(file_list) == 0:
+        raise ValueError("No CSV files found. Please check the dataset path.")
+
+    # Define chunk size based on your system's capacity
+    chunk_size = 1000000
+
+    # **First Pass: Collect All Unique Labels**
+    print('Collecting all unique labels...')
+
+    unique_labels_set = set()
+
+    for file in file_list:
+        print(f'Processing file: {file} for unique labels')
+        for chunk in load_data_in_chunks([file], chunk_size):
+            # Ensure 'Label' column exists
+            if 'Label' not in chunk.columns:
+                raise ValueError(f"'Label' column not found in {file}")
+            
+            # Extract unique labels
+            unique_labels = chunk['Label'].astype(str).unique()
+            unique_labels_set.update(unique_labels)
+            
+            # Optional: Clean up
+            del chunk
+            gc.collect()
+
+    # Convert the set to a sorted list
+    all_unique_labels = sorted(list(unique_labels_set))
+    print(f'All unique labels ({len(all_unique_labels)}): {all_unique_labels}')
+
+    # **Initialize and Fit LabelEncoder on All Unique Labels**
+    le_label = LabelEncoder()
+    le_label.fit(all_unique_labels)
+    print(f'Classes in label encoder: {le_label.classes_}')
+    print(f'Number of classes: {len(le_label.classes_)}')
+
+    # **Second Pass: Process Data and Encode Labels**
+    print('Processing data and encoding labels...')
+
+    # Initialize empty lists for features and labels
+    X_list = []
+    y_list = []
+
+    for file in file_list:
+        print(f'Processing file: {file} for data and labels')
+        for chunk in load_data_in_chunks([file], chunk_size):
+            # Data Cleaning Steps
+            # Drop columns with all NaNs
+            chunk.dropna(axis=1, how='all', inplace=True)
+
+            # Replace inf values with NaN and drop rows with NaN
+            chunk.replace([np.inf, -np.inf], np.nan, inplace=True)
+            chunk.dropna(inplace=True)
+
+            # Remove irrelevant features
+            irrelevant_features = ['Flow ID', 'Source IP', 'Source Port', 'Destination IP', 'Destination Port', 'Timestamp']
+            chunk.drop(irrelevant_features, axis=1, inplace=True, errors='ignore')
+
+            # Encode categorical variables (excluding 'Label')
+            categorical_cols = chunk.select_dtypes(include=['object']).columns.tolist()
+            if 'Label' in categorical_cols:
+                categorical_cols.remove('Label')
+
+            # Initialize LabelEncoder for categorical features
+            le_categorical = LabelEncoder()
+
+            for col in categorical_cols:
+                # Fit and transform each categorical column
+                chunk[col] = le_categorical.fit_transform(chunk[col].astype(str))
+
+            # Encode the 'Label' column using the fitted le_label
+            chunk['Label'] = le_label.transform(chunk['Label'].astype(str))
+
+            # Separate features and labels
+            X_chunk = chunk.drop('Label', axis=1)
+            y_chunk = chunk['Label']
+
+            # Append to lists
+            X_list.append(X_chunk)
+            y_list.append(y_chunk)
+
+            # Optional: Clean up
+            del chunk, X_chunk, y_chunk
+            gc.collect()
+
+            # Optional: Break after processing a certain number of chunks to limit data size
+            # if len(X_list) * chunk_size >= desired_size:
+            #     break
+
+    # Concatenate all chunks
+    print('Concatenating all processed chunks...')
+    X = pd.concat(X_list, ignore_index=True)
+    y = pd.concat(y_list, ignore_index=True)
+    print(f'Dataset shape after loading and preprocessing: {X.shape}')
+
+    # Optional: Clean up lists to free memory
+    del X_list, y_list
+    gc.collect()
+
+    # Optimize data types
+    print('Optimizing data types...')
+    for col in X.select_dtypes(include=['float64']).columns:
+        X[col] = pd.to_numeric(X[col], downcast='float')
+    for col in X.select_dtypes(include=['int64']).columns:
+        X[col] = pd.to_numeric(X[col], downcast='integer')
+    print('Data types optimized.')
+
+    # Feature Scaling
+    print('Performing feature scaling...')
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    print('Feature scaling completed.')
+
+    # Use a smaller subset for initial testing (e.g., 20% of the data)
+    print('Sampling a subset of the data for initial testing...')
+    X_sampled, _, y_sampled, _ = train_test_split(
+        X_scaled, y, test_size=0.8, random_state=42, stratify=y
+    )
+    print(f'Sampled dataset shape: {X_sampled.shape}')
+    print(f'Class distribution after sampling: {Counter(y_sampled)}')
+
+    # Proceed with data splitting
+    print('Splitting data into training and testing sets...')
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_sampled, y_sampled, test_size=0.2, random_state=42, stratify=y_sampled
+        )
+        print(f'Training set size: {X_train.shape}, Test set size: {X_test.shape}')
+    except ValueError as e:
+        print(f'Error during train_test_split: {e}')
+        print('Attempting to split without stratification...')
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_sampled, y_sampled, test_size=0.2, random_state=42
+        )
+        print(f'Training set size: {X_train.shape}, Test set size: {X_test.shape}')
+        print('Proceeding without stratification. Be cautious of class imbalance.')
+    print('Converting data to PyTorch tensors...')
+    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
+    Y_train = torch.tensor(y_train.values, dtype=torch.long).to(device)
+    X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
+    Y_test = torch.tensor(y_test.values, dtype=torch.long).to(device)
+            
+    # Create Dataset objects for training and testing data
+    train_dataset = DataFrameDataset(X_train, Y_train)
+    test_dataset = DataFrameDataset(X_test, Y_test)
+    print("length of test dataset", test_dataset.__len__())
+    return train_dataset, test_dataset
+
+
+def load_data_cicids2017_old(args):
     folder = '../dataset/cicids2017'
     data = pd.DataFrame() # Initialize an empty DataFrame to store the dataset
     # Load the dataset
@@ -331,6 +499,8 @@ def load_data_x_iiotid(args):
     X = data.drop(['class1', 'class2', 'class3'], axis=1) 
     Y = data['class2'] 
     print(len(Y))
+    print("---------------------------------------------------------")
+    print(Y.unique())
     
     # Convert categorical columns to numerical using one-hot encoding 
     #X = pd.get_dummies(X, columns=cat_cols)
@@ -359,6 +529,8 @@ def load_data_x_iiotid(args):
     # Create Dataset objects for training and testing data
     train_dataset = DataFrameDataset(X_train, Y_train)
     test_dataset = DataFrameDataset(X_test, Y_test)
+    print("---------------------------------------------------------")
+    print(np.unique(Y_train))
     print("length of test dataset", test_dataset.__len__())
     return train_dataset, test_dataset
 

@@ -90,6 +90,7 @@ def label_flipping(dataset, idxs, ratio=0.1):
     """Apply label flipping attack to randomly change labels of traffic samples."""
     
     num_flips = int(len(idxs) * ratio)
+    np.random.seed(1234)
 
     # Generate random indices to flip
     flip_indices = np.random.choice(idxs, num_flips, replace=False)
@@ -114,3 +115,5 @@ def label_flipping(dataset, idxs, ratio=0.1):
     dataset.targets = targets.tolist()
     
     return dataset
+
+
