@@ -33,6 +33,7 @@ import time
 from models import Proj, Embedder, DenseModel
 from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
 from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
+from inference import reconstruct_input, sample_original_data, evaluate_reconstruction
 
 
 def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
@@ -756,6 +757,24 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             proto_loss += loss['2']
             mapping_layers_weights = {k: v for k, v in w.items() if 'conv1' in k or 'conv2' in k or 'dense1' in k}
             local_mapping_weights.append(copy.deepcopy(mapping_layers_weights))
+            projection_model = copy.deepcopy(local_model_list[idx])
+            if args.inference:
+                input_shape = (args.num_features,) 
+                
+                for (label,C_i) in local_protos[idx].items():
+                    X_reconstructed = reconstruct_input(args, projection_model, C_i,  
+                                        learning_rate=0.01, num_iterations=1000, 
+                                        lambda_l2=1e-4, lambda_l1=1e-4)
+                
+                    # Move to CPU and convert to NumPy for analysis
+                    X_reconstructed_np = X_reconstructed.cpu().numpy()
+                    sample_size = 1
+                    #sampled_original_data = sample_original_data(train_dataset, sample_size=sample_size)
+
+                    # Evaluate the attack
+                    #similarity_metrics = evaluate_reconstruction(X_reconstructed, sampled_original_data[label])
+                    distance = evaluate_reconstruction(args, X_reconstructed, train_dataset, label)
+
 
 
         """# Aggregate mapping layers
@@ -823,6 +842,9 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 local_model = copy.deepcopy(global_model)
                 local_model.load_state_dict(local_weights_list[idx], strict=True)
                 local_model_list[idx] = global_model #local_model
+
+
+            
 
         # update global protos
         if args.proto_robust:
@@ -1451,7 +1473,7 @@ if __name__ == '__main__':
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
             
-    for alpha in [0.75, 0.5, 0.25]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+    for alpha in [0.75]:#, 0.5, 0.25]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
         args.alpha = alpha
         train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
         unique_labels = set(range(args.num_classes))

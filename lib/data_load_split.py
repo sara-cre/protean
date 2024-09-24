@@ -497,6 +497,7 @@ def load_data_x_iiotid(args):
 
     # Separate features (X) and labels (Y)
     X = data.drop(['class1', 'class2', 'class3'], axis=1) 
+    print("(,(,(,(,,(number of columns",len(X.columns))
     Y = data['class2'] 
     print(len(Y))
     print("---------------------------------------------------------")
@@ -511,6 +512,7 @@ def load_data_x_iiotid(args):
 
     # Remove the excluded columns from the categorical columns list
     cat_cols = cat_cols.difference(exclude_cols)
+    print("Categorical columns:\n", cat_cols)
     X = pd.get_dummies(X, columns=cat_cols)
     # Scale numerical features 
     scaler = StandardScaler() 
@@ -527,6 +529,7 @@ def load_data_x_iiotid(args):
         unlabeled_indices = np.random.choice(len(Y_train), size=int(len(Y_train) * args.semi), replace=False)
         Y_train[unlabeled_indices] = -1"""
     # Create Dataset objects for training and testing data
+    print("(,(,(,(,,(number of columns",len(X_train.columns))
     train_dataset = DataFrameDataset(X_train, Y_train)
     test_dataset = DataFrameDataset(X_test, Y_test)
     print("---------------------------------------------------------")
