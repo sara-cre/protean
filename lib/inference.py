@@ -8,6 +8,10 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 
 
+
+
+from update import  DatasetSplit
+
 #https://github.com/mit-han-lab/dlg/blob/master/main.py
 #https://github.com/Davidenthoven/Fidel-Reconstruction-Demo/blob/main/FIdel_REconstruction_Demo.ipynb
 
@@ -248,7 +252,7 @@ def sample_original_data(train_dataset, sample_size, label=None):
     for class_label, features in sampled_data.items():
         sampled_class_means[class_label] = np.mean(features, axis=0)
     
-    return sampled_class_means""""
+    return sampled_class_means"""
 
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
@@ -258,9 +262,11 @@ from sklearn.metrics import mean_squared_error
 
 import torch
 
-def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label):
+def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label,idxs):
     
     # Efficient filtering
+    
+    train_dataset =  DatasetSplit(train_dataset, idxs)
     train_dataset_filtered = [images for images, labels in train_dataset if labels.item() == label]
     
     # Stack images into a single tensor and compute the average

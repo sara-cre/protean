@@ -88,9 +88,11 @@ def args_parser():
     parser.add_argument('--attack_type', type=str, default='none', help='poisoning attack type')
     parser.add_argument('--flip_ratio', type=float, default=0.1, help='flipping ratio')
     parser.add_argument('--num_attackers', type=float, default=1, help='number of attackers')
+    parser.add_argument('--num_attacker', type=float, default=1, help='index of the attacker')
     parser.add_argument('--attack_round', type=int, default=0, help='attack round')
 
     parser.add_argument('--proto_robust', type=bool, default=False, help='proto robust')
+    parser.add_argument('--outlier_detection', type=bool, default=False, help='outlier detection')
     parser.add_argument('--inference', type=bool, default=False, help='inference')
     
     parser.add_argument('--mu', type=float, default=0.01, help='mu for fedprox')

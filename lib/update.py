@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch.optim import Optimizer
 from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix, accuracy_score
 from losses import ConLoss, ConLoss_op, OptimizedLoss
-from poisoning import label_flipping
+from poisoning import label_flipping, label_flipping_majorityclass
 from utils import agg_func
 from torch.nn import functional as F
 
@@ -129,8 +129,9 @@ class LocalUpdate(object):
         args = self.args
         idxs_train = idxs[:int(1 * len(idxs))]
         attack_round = [2,4,6,8,10]
-        if args.attack_type == 'label-flipping' and self.global_round in attack_round and args.num_attackers > self.idx:
-            dataset = label_flipping(dataset, idxs_train, args.flip_ratio)
+        #dataset = DatasetSplit(dataset, idxs_train)
+        if args.attack_type == 'label-flipping' and  args.num_attacker == self.idx: #self.global_round in attack_round and args.num_attacker > self.idx
+            dataset = label_flipping_majorityclass(dataset, idxs_train, args.flip_ratio)
             print('after flipping', dataset.labels[idxs_train])
         print(f'len of train dataset: {len(idxs_train)}')
         trainloader = DataLoader(DatasetSplit(dataset, idxs_train),

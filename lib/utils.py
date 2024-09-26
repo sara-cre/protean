@@ -12,6 +12,8 @@ import femnist
 from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data, load_data_cicids2017
 import numpy as np
 import torch.nn.functional as F
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 
 trans_cifar10_train = transforms.Compose([transforms.RandomCrop(32, padding=4),
                                           transforms.RandomHorizontalFlip(),
@@ -364,6 +366,66 @@ def proto_anomaly_detection(local_protos, args):
     trusted_clients = [idx for idx, score in client_anomaly_scores.items() if score <= s_threshold]
     
     return trusted_clients
+
+
+def anomaly_detection_distance(local_protos, args):
+    """
+    Detects anomalous prototypes and returns a list of trusted client indices.
+    """
+    num_clients = len(local_protos)
+    class_protos = {}  # Key: class label, Value: list of (client_idx, prototype)
+    for client_idx, protos in local_protos.items():
+        for label, proto in protos.items():
+            if label in class_protos:
+                class_protos[label].append((client_idx, proto))
+            else:
+                class_protos[label] = [(client_idx, proto)]
+    
+    # Initialize a set of trusted clients
+    trusted_clients = set(range(num_clients))
+    
+    # Parameters for anomaly detection
+    k = 2#args.anomaly_k  # Number of standard deviations for threshold
+    delta = 0.1#args.anomaly_delta  # Threshold for intra-client prototype distances
+    
+    client_anomaly_scores = {idx: 0 for idx in range(num_clients)}
+    
+    # Inter-client prototype analysis
+    for label, proto_list in class_protos.items():
+        # Compute pairwise distances
+        distances = []
+        client_indices = []
+        for i in range(len(proto_list)):
+            for j in range(i+1, len(proto_list)):
+                proto_i = proto_list[i][1]
+                proto_j = proto_list[j][1]
+                dist = F.pairwise_distance(proto_i.unsqueeze(0), proto_j.unsqueeze(0), p=2).item()
+                distances.append(dist)
+        if len(distances) == 0:
+            continue  # Not enough prototypes to compare
+        mean_dist = np.mean(distances)
+        std_dist = np.std(distances)
+        
+        # Compute average distance for each client's prototype to others
+        for client_idx, proto in proto_list:
+            dists = []
+            for other_idx, other_proto in proto_list:
+                if client_idx != other_idx:
+                    dist = F.pairwise_distance(proto.unsqueeze(0), other_proto.unsqueeze(0), p=2).item()
+                    dists.append(dist)
+            avg_dist = np.mean(dists)
+            if avg_dist > mean_dist + k * std_dist:
+                # Mark client as suspicious
+                client_anomaly_scores[client_idx] += 1
+    
+
+    
+    # Determine trusted clients based on anomaly scores
+    s_threshold = 1#args.anomaly_score_threshold
+    trusted_clients = [idx for idx, score in client_anomaly_scores.items() if score <= s_threshold]
+    
+    return trusted_clients
+
 
 
 def exp_details(args):

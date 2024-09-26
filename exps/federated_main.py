@@ -33,7 +33,8 @@ import time
 from models import Proj, Embedder, DenseModel
 from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
 from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
-from inference import reconstruct_input, sample_original_data, evaluate_reconstruction
+from inference import reconstruct_input,  evaluate_reconstruction #sample_original_data,
+from poisoning import class_wise_outlier_detection, evaluate_outlier_detection
 
 
 def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
@@ -712,7 +713,8 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
     macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
     precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
-    global_protos = []
+    reconstruction_loss_file = file_folder + 'reconstruction_loss_' + file_ext + '.txt'
+    global_protos = [] 
     idxs_users = np.arange(args.num_users)
 
     train_loss, train_accuracy = [], []
@@ -736,6 +738,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         print(f'\n | Global Training Round : {round + 1} |\n')
 
         proto_loss = 0
+        reconstruct_loss = []
         for idx in idxs_users:
             local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
             
@@ -759,6 +762,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             local_mapping_weights.append(copy.deepcopy(mapping_layers_weights))
             projection_model = copy.deepcopy(local_model_list[idx])
             if args.inference:
+                reconstruct_loss_client = []
                 input_shape = (args.num_features,) 
                 
                 for (label,C_i) in local_protos[idx].items():
@@ -773,8 +777,14 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
                     # Evaluate the attack
                     #similarity_metrics = evaluate_reconstruction(X_reconstructed, sampled_original_data[label])
-                    distance = evaluate_reconstruction(args, X_reconstructed, train_dataset, label)
-
+                    distance = evaluate_reconstruction(args, X_reconstructed, train_dataset, label,user_groups[idx])
+                    reconstruct_loss_client.append(distance)
+                
+                reconstruct_loss.append(reconstruct_loss_client)
+                    
+        with open(reconstruction_loss_file, 'a') as file:
+            file.write(str(reconstruct_loss))
+            file.write('\n')
 
 
         """# Aggregate mapping layers
@@ -830,6 +840,13 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             else:
                 global_weights = average_weights_(local_weights)
             # update global weights
+
+            if args.outlier_detection:
+                outliers_per_class = class_wise_outlier_detection( local_protos,args.num_classes)
+                attacked_clients = [args.num_attacker]
+                metrics = evaluate_outlier_detection(outliers_per_class, attacked_clients, args.num_users, args.num_classes)
+                # Aggregate weights
+                global_weights = average_weights_(local_weights)
 
             
             global_model_ = copy.deepcopy(global_model)
@@ -1473,7 +1490,7 @@ if __name__ == '__main__':
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
             
-    for alpha in [0.75]:#, 0.5, 0.25]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+    for alpha in [0.75]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
         args.alpha = alpha
         train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
         unique_labels = set(range(args.num_classes))
@@ -1518,15 +1535,16 @@ if __name__ == '__main__':
                 for attackers in [2,6]:
                     args.num_attackers = attackers"""
         #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['fedproto']:
-                    args.alg = alg
-                    classic_eval = True
-                    """args.attack_type = 'label-flipping'
-                    for attack_perc in [0.25]:#,0.5,0.75]:
-                        args.flip_ratio = attack_perc
-                        print('*****************************flip ratio********************************: ', args.flip_ratio)
-                        for attackers in [2]:#,6]:
-                            args.num_attackers = attackers"""
+        for alg in ['fedproto']:#, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+            args.alg = alg
+            classic_eval = True
+            #args.proto_robust = True
+            args.attack_type = 'label-flipping'
+            for attack_perc in [0.25]:#,0.5,0.75]:
+                args.flip_ratio = attack_perc
+                print('*****************************flip ratio********************************: ', args.flip_ratio)
+                for attackers in [2]:#,6]:
+                    args.num_attackers = attackers
             
 
 
