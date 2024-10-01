@@ -520,6 +520,9 @@ def load_data_x_iiotid(args):
     # Convert labels to numerical values 
     label_encoder = LabelEncoder() 
     Y = label_encoder.fit_transform(Y) 
+    # Print the classes and their corresponding encoded values
+    for index, class_label in enumerate(label_encoder.classes_):
+        print(f"Class: {class_label}, Encoded: {index}")
     """if args.attack_type == 'label-flipping':
         Y = flip_labels(args, Y, args.flip_ratio)"""
         #Y = label_flipping_untargeted(Y, args.flip_ratio)

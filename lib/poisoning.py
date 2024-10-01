@@ -119,45 +119,107 @@ def label_flipping(dataset, idxs, ratio=0.1):
     dataset.targets = targets.tolist()
     
     return dataset
+import numpy as np
 
 def label_flipping_majorityclass(dataset, idxs, ratio=0.1, random_target=False):
     # Convert targets to a NumPy array for efficient processing
+    print("inside label_flipping_majorityclass")
+    print("flipping ratio:", ratio)
+    print(type(dataset.targets))
+    targets = np.array(dataset.targets)
+    
+    # Assuming get_majority_and_target_classes is defined elsewhere
+    majority_class, target_class = get_majority_and_target_classes(dataset, idxs)
+    print("majority_class:", majority_class)
+    
+    # Find the global indices where the target is the majority class
+    idxs_subset = np.array(idxs)  # Ensure idxs is a NumPy array
+    idxs_majority = idxs_subset[targets[idxs_subset] == majority_class]
+    
+    num_flips = int(len(idxs_majority) * ratio)
+    np.random.seed(1234)
+    
+    # Generate random global indices to flip
+    flip_indices = np.random.choice(idxs_majority, num_flips, replace=False)
+    print("len of flip indices", len(flip_indices))
+    
+    unique_labels = np.unique(targets)
+    
+    # Generate new labels for the selected indices
+    if random_target:
+        # Assign a random label (excluding the majority class) to each selected index
+        new_labels = np.random.choice(unique_labels[unique_labels != majority_class], size=num_flips)
+    else:
+        # Assign the target_class to each selected index
+        new_labels = np.full(num_flips, target_class)
+    
+    # Assign the new labels to the selected global indices
+    #dataset.targets[flip_indices] = new_labels
+    print("targets after flipping:", targets)
+    print("num of class after flipping:", np.bincount(targets[idxs_subset]))
+    
+    # Update the dataset's targets
+    #dataset.targets = targets.tolist()
+    
+    return flip_indices, new_labels
+
+def get_majority_and_target_classes(dataset, idxs):
     targets = np.array(dataset.targets)
     
     class_counts = np.bincount(targets[idxs])  # Use NumPy array indexing here
     majority_class = np.argmax(class_counts)
-    print("majority_class:", majority_class)
+    mislabel_mapping = {
+            0: 3,  # C&C → Lateral_movement
+            1: 2,  # Exfiltration → Exploitation
+            2: 8,  # Exploitation → Weaponization
+            3: 6,  # Lateral_movement → Reconnaissance
+            4: 6,  # Normal → Reconnaissance
+            5: 6,  # RDOS → Reconnaissance
+            6: 4,  # Reconnaissance → Normal
+            7: 2,  # Tampering → Exploitation
+            8: 2   # Weaponization → Exploitation
+        }
+    target_class = mislabel_mapping[majority_class]
+    return majority_class, target_class
+
+
+def determine_attacker_outlier_status(outliers_per_class, attacker_idx, dataset, idxs):
+    """
+    Determines if a specific attacker is detected as an outlier in either the majority class or the target class.
     
-    idxs_majority = np.where(targets[idxs] == majority_class)[0]
-
-    num_flips = int(len(idxs_majority) * ratio)
-    np.random.seed(1234)
-
-    # Generate random indices to flip
-    flip_indices = np.random.choice(idxs_majority, num_flips, replace=False)
-
-    unique_labels = np.unique(targets)
-
-    # Generate new labels for the selected indices
-    if random_target:
-        new_labels = np.array([
-            np.random.choice(unique_labels[unique_labels != majority_class])        
-        ])
-    else:
-        new_labels = np.array([0] * num_flips)
-
-    # Assign the new labels to the selected indices
-    targets[flip_indices] = new_labels
-
-    # Update the dataset's targets
-    dataset.targets = targets.tolist()
+    Args:
+        outliers_per_class (dict): Output from `class_wise_outlier_detection` mapping class labels to outliers.
+        attacker_idx (int or str): The client index of the attacker.
+        target_class (int): The class label of the target class.
+        majority_class (int): The class label of the majority class.
     
-    return dataset
+    Returns:
+        dict: Dictionary indicating outlier status in majority and/or target class.
+              Example:
+              {
+                  'outlier_in_majority_class': True,
+                  'outlier_in_target_class': False
+              }
+    """
+    majority_class, target_class = get_majority_and_target_classes(dataset, idxs)
+    outlier_status = {
+        'outlier_in_majority_class': False,
+        'outlier_in_target_class': False
+    }
+    
+    # Check outlier status in majority class
+    if majority_class in outliers_per_class:
+        outlier_status['outlier_in_majority_class'] = attacker_idx in outliers_per_class[majority_class]
+    
+    # Check outlier status in target class
+    if target_class in outliers_per_class:
+        outlier_status['outlier_in_target_class'] = attacker_idx in outliers_per_class[target_class]
+    
+    return outlier_status
 
 
 
-
-def class_wise_outlier_detection_(local_protos, num_classes, contamination=0.1):
+def class_wise_outlier_detection(local_protos, num_classes, contamination=0.1):
     """
     Performs class-wise outlier detection on local prototypes.
     
@@ -186,10 +248,10 @@ def class_wise_outlier_detection_(local_protos, num_classes, contamination=0.1):
         
         # Standardize the data
         scaler = StandardScaler()
-        prototypes_scaled = scaler.fit_transform(prototypes)
+        prototypes_scaled = prototypes#scaler.fit_transform(prototypes)
         
         # Apply Isolation Forest
-        clf = IsolationForest(contamination=contamination, random_state=42)
+        clf = IsolationForest(contamination=contamination, random_state=1234)
         preds = clf.fit_predict(prototypes_scaled)
         
         # Outliers are labeled as -1
@@ -204,7 +266,7 @@ def class_wise_outlier_detection_(local_protos, num_classes, contamination=0.1):
 
 
 
-def class_wise_outlier_detection(local_protos, num_classes, contamination=0.1, k=5):
+def class_wise_outlier_detection_knn(local_protos, num_classes, contamination=0.1, k=5):
     """
     Performs class-wise outlier detection on local prototypes using k-NN Distance.
     
@@ -358,3 +420,299 @@ def anomaly_detection_distance(local_protos, args):
     
     return trusted_clients
 
+
+
+import torch.nn.functional as F
+import numpy as np
+from typing import Dict
+
+def intra_client_analysis(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[int, int]:
+    """
+    Detects anomalies within each client's prototypes based on prototype distances.
+
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing the following attribute:
+            - alpha (float): Scaling factor for threshold calculation.
+
+    Returns:
+    - client_anomaly_scores (dict):
+        Dictionary mapping client indices to their anomaly scores from intra-client analysis.
+    """
+    alpha = 1.0  # Default alpha to 1.0 if not provided
+    client_anomaly_scores = {}
+
+    for client_id, protos in local_protos.items():
+        class_labels = list(protos.keys())
+        num_classes = len(class_labels)
+
+        if num_classes < 2:
+            # Not enough prototypes to compare
+            client_anomaly_scores[client_id] = 0
+            continue
+
+        # Extract all prototype tensors
+        proto_tensors = [protos[label] for label in class_labels]
+
+        # Compute all pairwise distances
+        distances = []
+        for i in range(num_classes):
+            for j in range(i + 1, num_classes):
+                proto_i = proto_tensors[i].unsqueeze(0)  # Add batch dimension
+                proto_j = proto_tensors[j].unsqueeze(0)
+                dist = F.pairwise_distance(proto_i, proto_j, p=2).item()
+                distances.append(dist)
+
+        # Calculate mean and standard deviation of distances
+        mean_dist = np.mean(distances)
+        std_dist = np.std(distances)
+
+        # Define threshold
+        threshold = mean_dist - alpha * std_dist
+
+        # Check if any distance is below the threshold
+        is_anomalous = any(d < threshold for d in distances)
+
+        # Assign anomaly score (1 for anomalous, 0 otherwise)
+        client_anomaly_scores[client_id] = 1 if is_anomalous else 0
+
+    return client_anomaly_scores
+
+import torch.nn.functional as F
+import torch
+from typing import Dict, Tuple
+
+def get_min_prototype_distances(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[int, Tuple[float, Tuple[str, str]]]:
+    """
+    For each client, computes the pairwise distances between all class prototypes,
+    sorts them, and identifies the minimum distance along with the related classes.
+
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing any additional parameters (not used in this function).
+
+    Returns:
+    - min_distances (dict):
+        Dictionary mapping each client index to a tuple containing:
+            - The minimum distance (float).
+            - A tuple of the two class labels (str) that have this minimum distance.
+    """
+    min_distances = {}  # To store the results for each client
+
+    for client_id, protos in local_protos.items():
+        class_labels = list(protos.keys())
+        num_classes = len(class_labels)
+
+        if num_classes < 2:
+            print(f"Client {client_id}: Not enough prototypes to compute distances.")
+            min_distances[client_id] = (None, (None, None))
+            continue  # No pairs to compare
+
+        min_dist = float('inf')
+        min_pair = (None, None)
+
+        # Iterate over all unique pairs of class prototypes
+        for i in range(num_classes):
+            for j in range(i + 1, num_classes):
+                label_i = class_labels[i]
+                label_j = class_labels[j]
+                proto_i = protos[label_i].unsqueeze(0)  # Add batch dimension
+                proto_j = protos[label_j].unsqueeze(0)
+
+                # Compute Euclidean distance
+                dist = F.pairwise_distance(proto_i, proto_j, p=2).item()
+
+                # Update minimum distance and pair if necessary
+                if dist < min_dist:
+                    min_dist = dist
+                    min_pair = (label_i, label_j)
+
+        # Store the minimum distance and corresponding class labels
+        min_distances[client_id] = (min_dist, min_pair)
+
+        # Print the result for the current client
+        print(f"Client {client_id}: Minimum distance = {min_dist:.4f} between classes '{min_pair[0]}' and '{min_pair[1]}'.")
+        
+    return min_distances
+
+
+from typing import Dict, List, Tuple
+
+def inter_client_analysis(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[str, List[Tuple[int, float]]]:
+    """
+    For each class, identifies clients with the highest distances of their prototypes
+    compared to other clients' prototypes.
+
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing the following attributes:
+            - top_k (int): Number of top clients to identify per class based on distance.
+
+    Returns:
+    - high_distance_clients (dict):
+        Dictionary mapping each class label to a list of tuples, each containing:
+            - Client index (int)
+            - Distance to the mean prototype (float)
+    """
+    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
+    high_distance_clients = {}  # To store results per class
+
+    # Organize prototypes by class
+    class_protos = {}
+    for client_id, protos in local_protos.items():
+        for class_label, proto in protos.items():
+            class_protos.setdefault(class_label, []).append((client_id, proto))
+
+    # Analyze each class separately
+    for class_label, proto_list in class_protos.items():
+        num_clients = len(proto_list)
+        if num_clients < 2:
+            print(f"Class '{class_label}': Not enough prototypes to compute distances.")
+            high_distance_clients[class_label] = []
+            continue  # No comparison possible
+
+        # Stack all prototypes into a tensor for efficient computation
+        prototypes = torch.stack([proto for _, proto in proto_list])  # Shape: (num_clients, feature_dim)
+
+        # Compute the mean prototype
+        mean_proto = torch.mean(prototypes, dim=0).detach()  # Shape: (feature_dim,)
+
+        # Compute distances of each prototype to the mean prototype
+        distances = F.pairwise_distance(prototypes.detach(), mean_proto.unsqueeze(0), p=2).numpy()  # Shape: (num_clients,)
+
+        # Pair each client with their distance
+        client_distances = [(proto_list[i][0], distances[i]) for i in range(num_clients)]
+
+        # Sort clients based on distance in descending order
+        sorted_clients = sorted(client_distances, key=lambda x: x[1], reverse=True)
+
+        # Select top_k clients with highest distances
+        top_clients = sorted_clients[:top_k]
+
+        # Store the results
+        high_distance_clients[class_label] = top_clients
+
+        # Print the results for the current class
+        print(f"Class '{class_label}': Top {top_k} client(s) with highest distances:")
+        for client_id, dist in top_clients:
+            print(f"  - Client {client_id}: Distance = {dist:.4f}")
+        print()  # Blank line for readability
+
+    return high_distance_clients
+
+
+
+import torch.nn.functional as F
+import torch
+from typing import Dict
+
+def get_min_prototype_distances_simple(
+    local_protos: Dict[int, Dict[str, torch.Tensor]], 
+    args
+) -> Dict[str, any]:
+    """
+    For each client, computes the pairwise distances between all class prototypes,
+    identifies the minimum distance along with the related classes, and determines
+    the overall minimum distance across all clients.
+    
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing any additional parameters (not used in this function).
+    
+    Returns:
+    - results (dict):
+        A dictionary containing:
+            - 'per_client_min_distances': Dict mapping client IDs to their minimum distance and related classes.
+            - 'global_min': Dict containing the overall minimum distance, client ID, and related classes.
+    """
+    # Dictionary to store per-client minimum distances and related classes
+    per_client_min_distances = {}
+    
+    # Variables to track the overall minimum distance across all clients
+    global_min_distance = float('inf')
+    global_min_client_id = None
+    global_min_classes = (None, None)
+    
+    # Iterate over each client to compute pairwise distances
+    for client_id, protos in local_protos.items():
+        class_labels = list(protos.keys())
+        num_classes = len(class_labels)
+        
+        if num_classes < 2:
+            print(f"Client {client_id}: Not enough prototypes to compute distances.")
+            per_client_min_distances[client_id] = {
+                'min_distance': None,
+                'class1': None,
+                'class2': None
+            }
+            continue  # Skip to the next client
+        
+        min_distance = float('inf')
+        class1 = None
+        class2 = None
+        
+        # Compute pairwise distances between all unique class pairs
+        for i in range(num_classes):
+            for j in range(i + 1, num_classes):
+                label_i = class_labels[i]
+                label_j = class_labels[j]
+                
+                proto_i = protos[label_i].unsqueeze(0)  # Add batch dimension
+                proto_j = protos[label_j].unsqueeze(0)
+                
+                # Compute Euclidean distance
+                distance = F.pairwise_distance(proto_i, proto_j, p=2).item()
+                
+                # Update minimum distance and related classes if necessary
+                if distance < min_distance:
+                    min_distance = distance
+                    class1 = label_i
+                    class2 = label_j
+        
+        # Store the minimum distance and related classes for the current client
+        per_client_min_distances[client_id] = {
+            'min_distance': min_distance,
+            'class1': class1,
+            'class2': class2
+        }
+        
+        # Print the minimum distance details for the current client
+        print(f"Client {client_id}: Minimum distance = {min_distance:.4f} between classes '{class1}' and '{class2}'.")
+        
+        # Update the global minimum if the current client's min distance is smaller
+        if min_distance < global_min_distance:
+            global_min_distance = min_distance
+            global_min_client_id = client_id
+            global_min_classes = (class1, class2)
+    
+    # After processing all clients, print the overall minimum distance details
+    if global_min_client_id is not None:
+        print("\n=== Overall Minimum Distance ===")
+        print(f"Client {global_min_client_id}: Minimum distance = {global_min_distance:.4f} between classes '{global_min_classes[0]}' and '{global_min_classes[1]}'.")
+    else:
+        print("\nNo minimum distances computed across clients.")
+    
+    # Compile the results into a single dictionary
+    results = {
+        'per_client_min_distances': per_client_min_distances,
+        
+        'client_id': global_min_client_id,
+        'min_distance': global_min_distance,
+        'class1': global_min_classes[0],
+        'class2': global_min_classes[1]
+        
+    }
+    
+    return results

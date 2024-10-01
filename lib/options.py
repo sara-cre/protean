@@ -94,6 +94,7 @@ def args_parser():
     parser.add_argument('--proto_robust', type=bool, default=False, help='proto robust')
     parser.add_argument('--outlier_detection', type=bool, default=False, help='outlier detection')
     parser.add_argument('--inference', type=bool, default=False, help='inference')
+    parser.add_argument('--dp', type=bool, default=False, help='differential privacy')
     
     parser.add_argument('--mu', type=float, default=0.01, help='mu for fedprox')
     args = parser.parse_args()

@@ -298,9 +298,139 @@ def proto_aggregation(local_protos_list):
 
     return agg_protos_label
 
-
+import torch.nn.functional as F
+import numpy as np
 
 def proto_anomaly_detection(local_protos, args):
+    """
+    Detects anomalous prototypes and returns a list of trusted client indices.
+    Allows specifying the number of clients to eliminate (not trusted).
+    
+    Parameters:
+    - local_protos (dict): Dictionary where keys are client indices and values are dictionaries
+                           mapping class labels to prototype tensors.
+    - args: An object containing the following attributes:
+        - anomaly_k (float): Number of standard deviations for inter-client threshold.
+        - anomaly_alpha (float): Hyperparameter for intra-client delta calculation.
+        - num_eliminated (int): Number of clients to eliminate based on anomaly scores.
+        - anomaly_score_threshold (int): Anomaly score threshold for initial trusted clients.
+    
+    Returns:
+    - trusted_clients (list): List of trusted client indices after elimination.
+    """
+    num_clients = len(local_protos)
+    class_protos = {}  # Key: class label, Value: list of (client_idx, prototype)
+    
+    # Organize prototypes by class
+    for client_idx, protos in local_protos.items():
+        for label, proto in protos.items():
+            if label in class_protos:
+                class_protos[label].append((client_idx, proto))
+            else:
+                class_protos[label] = [(client_idx, proto)]
+    
+    # Initialize anomaly scores for each client
+    client_anomaly_scores = {idx: 0 for idx in range(num_clients)}
+    
+    # Parameters for anomaly detection
+    k = getattr(args, 'anomaly_k', 2)  # Default to 2 if not provided
+    alpha = getattr(args, 'anomaly_alpha', 1)  # Default to 1 if not provided
+    num_eliminated = 1#getattr(args, 'num_eliminated', 1)  # Default to 1 if not provided
+    s_threshold = getattr(args, 'anomaly_score_threshold', 1)  # Default to 1 if not provided
+    
+    # Dictionary to store dynamic delta for each class
+    class_delta = {}
+    
+    # Inter-client prototype analysis
+    for label, proto_list in class_protos.items():
+        # Compute pairwise inter-client distances
+        distances = []
+        for i in range(len(proto_list)):
+            for j in range(i+1, len(proto_list)):
+                proto_i = proto_list[i][1]
+                proto_j = proto_list[j][1]
+                dist = F.pairwise_distance(proto_i.unsqueeze(0), proto_j.unsqueeze(0), p=2).item()
+                distances.append(dist)
+        
+        if len(distances) == 0:
+            continue  # Not enough prototypes to compare
+        
+        mean_dist = np.mean(distances)
+        std_dist = np.std(distances)
+        
+        # Compute average distance for each client's prototype to others
+        for client_idx, proto in proto_list:
+            dists = []
+            for other_idx, other_proto in proto_list:
+                if client_idx != other_idx:
+                    dist = F.pairwise_distance(proto.unsqueeze(0), other_proto.unsqueeze(0), p=2).item()
+                    dists.append(dist)
+            avg_dist = np.mean(dists) if dists else 0
+            if avg_dist > mean_dist + k * std_dist:
+                # Mark client as suspicious
+                client_anomaly_scores[client_idx] += 1
+    
+    # Intra-client prototype analysis with dynamic delta
+    for label, proto_list in class_protos.items():
+        # Collect all intra-client distances for this class
+        intra_distances = []
+        for client_idx, protos in local_protos.items():
+            if label in protos:
+                proto = protos[label]
+                for other_label, other_proto in protos.items():
+                    if other_label != label:
+                        dist = F.pairwise_distance(proto.unsqueeze(0), other_proto.unsqueeze(0), p=2).item()
+                        intra_distances.append(dist)
+        
+        if len(intra_distances) == 0:
+            # If there's only one prototype for this class across all clients
+            class_delta[label] = 0
+            continue
+        
+        mean_intra = np.mean(intra_distances)
+        std_intra = np.std(intra_distances)
+        
+        # Define delta for this class (adjust alpha as needed)
+        delta = mean_intra - alpha * std_intra
+        class_delta[label] = delta
+        
+        # Now, analyze intra-client distances using the dynamic delta
+        for client_idx, proto in class_protos[label]:
+            protos = local_protos[client_idx]
+            labels = list(protos.keys())
+            for i in range(len(labels)):
+                for j in range(i + 1, len(labels)):
+                    proto_i = protos[labels[i]]
+                    proto_j = protos[labels[j]]
+                    dist = F.pairwise_distance(proto_i.unsqueeze(0), proto_j.unsqueeze(0), p=2).item()
+                    if dist < delta:
+                        client_anomaly_scores[client_idx] += 1  # Prototypes are too close, possible label flipping
+    
+    # Determine trusted clients based on anomaly scores
+    # Initial trusted clients based on score threshold
+    initial_trusted_clients = [idx for idx, score in client_anomaly_scores.items() if score <= s_threshold]
+    
+    # Sort clients by their anomaly scores in descending order
+    sorted_clients = sorted(client_anomaly_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # Determine the actual number of clients to eliminate
+    num_eliminated = min(getattr(args, 'num_eliminated', 1), num_clients)
+    
+    # Get the top 'num_eliminated' clients with highest anomaly scores
+    eliminated_clients = [client for client, score in sorted_clients[:num_eliminated]]
+    
+    # Trusted clients are all except the eliminated ones
+    trusted_clients = [idx for idx in client_anomaly_scores if idx not in eliminated_clients]
+    
+    # Optional: Print eliminated clients
+    print(f"Eliminated Clients: {eliminated_clients}")
+    
+    return trusted_clients
+
+
+
+
+def proto_anomaly_detection_(local_protos, args):
     """
     Detects anomalous prototypes and returns a list of trusted client indices.
     """
@@ -319,6 +449,7 @@ def proto_anomaly_detection(local_protos, args):
     # Parameters for anomaly detection
     k = 2#args.anomaly_k  # Number of standard deviations for threshold
     delta = 0.1#args.anomaly_delta  # Threshold for intra-client prototype distances
+    
     
     client_anomaly_scores = {idx: 0 for idx in range(num_clients)}
     
@@ -360,7 +491,8 @@ def proto_anomaly_detection(local_protos, args):
                 dist = F.pairwise_distance(proto_i.unsqueeze(0), proto_j.unsqueeze(0), p=2).item()
                 if dist < delta:
                     client_anomaly_scores[client_idx] += 1  # Prototypes are too close, possible label flipping
-    
+                
+
     # Determine trusted clients based on anomaly scores
     s_threshold = 1#args.anomaly_score_threshold
     trusted_clients = [idx for idx, score in client_anomaly_scores.items() if score <= s_threshold]

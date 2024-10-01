@@ -33,9 +33,9 @@ import time
 from models import Proj, Embedder, DenseModel
 from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
 from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
-from inference import reconstruct_input,  evaluate_reconstruction #sample_original_data,
-from poisoning import class_wise_outlier_detection, evaluate_outlier_detection
-
+from inference import reconstruct_input,  evaluate_reconstruction, compute_baseline_mse #sample_original_data,
+from poisoning import class_wise_outlier_detection, evaluate_outlier_detection, determine_attacker_outlier_status
+from poisoning import intra_client_analysis, get_min_prototype_distances, inter_client_analysis, get_min_prototype_distances_simple
 
 def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
     assert client_mode in ['none', 'representation', 'out_layer', 'interpolate']
@@ -304,7 +304,7 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
         elif args.alg == 'fedalt' or args.alg == 'fedsim':
             global_weights = average_weights_shared(local_weights, is_on_server)
         elif args.alg == 'krum':
-            global_weights = krum(args, local_weights)
+            global_weights, _ = krum(args, local_weights)
         elif args.alg == 'median':
             global_weights = median(args,local_weights)
         elif args.alg == 'trimmed_mean':
@@ -496,7 +496,7 @@ def aggregate_weights(local_weights):
 
 import torch
 
-def krum(args, local_weights, f=0):
+"""def krum(args, local_weights, f=0):
     # Convert local weights to a list of tensors
     gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
     
@@ -520,8 +520,145 @@ def krum(args, local_weights, f=0):
     _, selected_gradient = min(scores, key=lambda x: x[0])
 
     # Return the selected gradient as a dictionary
-    return list_todict(selected_gradient, args)
+    return list_todict(selected_gradient, args)"""
 
+def krum(args, local_weights, f=0):
+    """
+    Krum aggregation method.
+
+    Args:
+        args: Argument parser or configuration object containing necessary attributes.
+        local_weights (List[OrderedDict]): List of local model updates from clients.
+        f (int): Number of Byzantine (malicious) clients to tolerate.
+
+    Returns:
+        OrderedDict: Aggregated gradient dictionary.
+    """
+    n = len(local_weights)
+    m = n - f - 2  # Number of gradients to consider for scoring
+
+    if m < 1:
+        raise ValueError("Not enough clients to perform Krum with the given f.")
+
+    # Convert OrderedDicts to flat lists
+    gradients = [orderdict_tolist(weight) for weight in local_weights]
+
+    # Convert flat lists to tensors
+    gradients_tensors = [torch.tensor(gradient) for gradient in gradients]
+
+    # Calculate pairwise Euclidean distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distance = torch.norm(gradients_tensors[i] - gradients_tensors[j]).item()
+            distances[i, j] = distances[j, i] = distance
+
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[1:m+1]).item()  # Exclude distance to itself (0)
+        scores.append((score, i, local_weights[i]))
+
+    # Select the gradient with the smallest score
+    scores.sort(key=lambda x: x[0])
+    selected_score, selected_index, selected_gradient = scores[0]
+
+    # Determine eliminated gradients
+    eliminated = [i for i in range(n) if i != selected_index]
+
+    # Print results
+    print("=== Krum Aggregation ===")
+    print(f"Selected Gradient: Client {selected_index + 1} with score {selected_score}")
+    print("Eliminated Gradients:")
+    for idx in eliminated:
+        print(f"  Client {idx + 1}")
+    print("========================\n")
+
+    return selected_gradient, eliminated
+
+
+
+def multi_krum(args, local_weights, f=0, num_selected=8):
+    """
+    Multi-Krum aggregation method.
+
+    Args:
+        args: Argument parser or configuration object containing necessary attributes.
+        local_weights (List[OrderedDict]): List of local model updates from clients.
+        f (int): Number of Byzantine (malicious) clients to tolerate.
+        num_selected (int): Number of gradients to select for aggregation.
+
+    Returns:
+        OrderedDict: Aggregated gradient dictionary.
+    """
+    n = len(local_weights)
+    m = n - f - 2  # Number of gradients to consider for scoring
+
+    if m < 1:
+        raise ValueError("Not enough clients to perform Multi-Krum with the given f.")
+
+    # Set num_selected to max_num_selected or lower
+    num_selected = min(n-f-2, num_selected) 
+    """if num_selected > n - f - 2:
+        raise ValueError(f"num_selected should be <= {n - f - 2}, got {num_selected}")"""
+
+    # Convert OrderedDicts to flat lists
+    gradients = [orderdict_tolist(weight) for weight in local_weights]
+
+    # Convert flat lists to tensors
+    gradients_tensors = [torch.tensor(gradient) for gradient in gradients]
+
+    # Calculate pairwise Euclidean distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distance = torch.norm(gradients_tensors[i] - gradients_tensors[j]).item()
+            distances[i, j] = distances[j, i] = distance
+
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[1:m+1]).item()  # Exclude distance to itself (0)
+        scores.append((score, i, local_weights[i]))
+
+    # Sort gradients based on their scores (lower is better)
+    scores.sort(key=lambda x: x[0])
+
+    # Select the top 'num_selected' gradients with the smallest scores
+    selected = scores[:num_selected]
+    selected_indices = [item[1] for item in selected]
+    selected_gradients = [item[2] for item in selected]
+
+    # Determine eliminated gradients
+    eliminated = [i for i in range(n) if i not in selected_indices]
+
+    # Aggregate by averaging
+    # Convert selected OrderedDicts to flat lists and then to tensors
+    selected_flat_lists = [orderdict_tolist(weight) for weight in selected_gradients]
+    selected_tensors = [torch.tensor(flat_list) for flat_list in selected_flat_lists]
+    aggregated_tensor = torch.mean(torch.stack(selected_tensors), dim=0)
+
+    # Convert the aggregated tensor back to OrderedDict
+    template = local_weights[0]  # Assuming all state_dicts have the same keys and shapes
+    aggregated_state_dict = list_todict(aggregated_tensor.tolist(), args)
+
+    # Print results
+    print("=== Multi-Krum Aggregation ===")
+    print("Selected Gradients:")
+    for score, idx, _ in selected:
+        print(f"  Client {idx + 1} with score {score}")
+    print("Eliminated Gradients:")
+    for idx in eliminated:
+        print(f"  Client {idx + 1}")
+    print("==============================")
+    """print(f"Aggregated Gradient (Multi-Krum):")
+    for key, tensor in aggregated_state_dict.items():
+        print(f"  {key}: {tensor}")
+    print("\n")"""
+
+    return aggregated_state_dict, eliminated
 
 
 def median(args, local_weights):
@@ -548,8 +685,9 @@ def trimmed_mean(args, local_weights, trim_ratio=0.1):
     stacked_gradients = torch.stack(gradients)
     
     # Sort and trim along the new dimension
-    sorted_gradients, _ = torch.sort(stacked_gradients, dim=0)
+    sorted_gradients, sorted_indices = torch.sort(stacked_gradients, dim=0)
     trimmed_gradients = sorted_gradients[trim_count:-trim_count]  # Trim the extremes
+    print("indices in trimmed mean", sorted_indices)
     
     # Compute the mean of the trimmed gradients
     trimmed_mean_gradient = torch.mean(trimmed_gradients, dim=0)
@@ -714,6 +852,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
     precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
     reconstruction_loss_file = file_folder + 'reconstruction_loss_' + file_ext + '.txt'
+    baseline_loss_file = file_folder + 'baseline_loss_' + file_ext + '.txt'
     global_protos = [] 
     idxs_users = np.arange(args.num_users)
 
@@ -733,6 +872,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         local_model_list = [CustomCNN(args) for i in range(args.num_users)]
     local_weights_prev = []
     acc_byclient_byclass = []
+    baseline_loss = []
     for round in tqdm(range(args.rounds)):
         local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
         print(f'\n | Global Training Round : {round + 1} |\n')
@@ -763,6 +903,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             projection_model = copy.deepcopy(local_model_list[idx])
             if args.inference:
                 reconstruct_loss_client = []
+                baseline_loss_client = []
                 input_shape = (args.num_features,) 
                 
                 for (label,C_i) in local_protos[idx].items():
@@ -777,15 +918,21 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
                     # Evaluate the attack
                     #similarity_metrics = evaluate_reconstruction(X_reconstructed, sampled_original_data[label])
+                    mse_baseline = compute_baseline_mse(args, train_dataset, label, user_groups[idx])
                     distance = evaluate_reconstruction(args, X_reconstructed, train_dataset, label,user_groups[idx])
                     reconstruct_loss_client.append(distance)
+                    baseline_loss_client.append(mse_baseline)
                 
                 reconstruct_loss.append(reconstruct_loss_client)
+                baseline_loss.append(baseline_loss_client)
                     
         with open(reconstruction_loss_file, 'a') as file:
             file.write(str(reconstruct_loss))
             file.write('\n')
-
+        
+        with open(baseline_loss_file, 'a') as file:
+            file.write(str(baseline_loss))
+            file.write('\n')
 
         """# Aggregate mapping layers
         global_mapping_weights = aggregate_weights(local_weights) #aggregate_mapping_layers(local_mapping_weights)
@@ -826,6 +973,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         elif aggregated == 'all_layers':
             if args.proto_robust:
                 # Perform anomaly detection before aggregating prototypes
+                #s = intra_client_analysis(local_protos, args)
+                #print('Intra-client analysis:', s)
+                get_min_prototype_distances(local_protos, args)
+                inter_client_analysis(local_protos, args)
                 trusted_clients = proto_anomaly_detection(local_protos, args)
 
                 # Update local_model_list to only include trusted clients
@@ -834,9 +985,20 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 print("-----------------------------------------")
                 print(f'Trusted clients: {trusted_idxs}')
                 print("-----------------------------------------")
-                trusted_local_weights = [local_weights[i] for i, idx in enumerate(idxs_users) if idx in trusted_clients]
+                if args.num_attacker in trusted_clients:
+                    print('Attacker not eliminated')
+                else:
+                    print('Attacker eliminated')
+
+                results = get_min_prototype_distances_simple(local_protos, args)
+                print('Min distances:', results)
+                eliminated_client = [results['client_id']]
+                #correct_clients = [idx for idx in idxs_users if idx not in eliminated_client]
+                local_weights_correct = [local_weights[i] for i, idx in enumerate(idxs_users) if idx not in eliminated_client]
+                global_weights = average_weights_(local_weights_correct)
+                #trusted_local_weights = [local_weights[i] for i, idx in enumerate(idxs_users) if idx in trusted_clients]
                 # Aggregate weights
-                global_weights = average_weights_(trusted_local_weights)
+                #global_weights = average_weights_(trusted_local_weights)
             else:
                 global_weights = average_weights_(local_weights)
             # update global weights
@@ -844,11 +1006,18 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             if args.outlier_detection:
                 outliers_per_class = class_wise_outlier_detection( local_protos,args.num_classes)
                 attacked_clients = [args.num_attacker]
-                metrics = evaluate_outlier_detection(outliers_per_class, attacked_clients, args.num_users, args.num_classes)
-                # Aggregate weights
-                global_weights = average_weights_(local_weights)
+                #metrics = evaluate_outlier_detection(outliers_per_class, attacked_clients, args.num_users, args.num_classes)
+                outlier_status = determine_attacker_outlier_status(outliers_per_class, args.num_attacker, train_dataset, user_groups[idx])
+                print('Outlier status:', outlier_status)
 
-            
+                # Aggregate weights
+                global_weights_krum, eliminated = multi_krum(args, local_weights, 0, args.num_users-2)#average_weights_(local_weights)
+                
+                if  args.num_attacker in eliminated:
+                    print('Attacker eliminated')
+                else:
+                    print('Attacker not eliminated')
+            #global_weights = average_weights_(local_weights)
             global_model_ = copy.deepcopy(global_model)
             global_model_.load_state_dict(global_weights, strict=True)
             global_model = global_model_
@@ -1490,7 +1659,7 @@ if __name__ == '__main__':
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
             
-    for alpha in [0.75]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+    for alpha in [0.75]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
         args.alpha = alpha
         train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
         unique_labels = set(range(args.num_classes))
@@ -1540,11 +1709,12 @@ if __name__ == '__main__':
             classic_eval = True
             #args.proto_robust = True
             args.attack_type = 'label-flipping'
-            for attack_perc in [0.25]:#,0.5,0.75]:
+            for attack_perc in [0.1]:#,0.5,0.75]:
                 args.flip_ratio = attack_perc
                 print('*****************************flip ratio********************************: ', args.flip_ratio)
-                for attackers in [2]:#,6]:
-                    args.num_attackers = attackers
+                for attackers in [5]:#,6]:
+                    #args.num_attackers = attackers
+                    args.num_attacker = attackers
             
 
 

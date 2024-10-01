@@ -16,6 +16,9 @@ from losses import ConLoss, ConLoss_op, OptimizedLoss
 from poisoning import label_flipping, label_flipping_majorityclass
 from utils import agg_func
 from torch.nn import functional as F
+#from opacus import PrivacyEngine
+#from opacus.accountants import RDPAccountant
+
 
 def contrastive_loss(proto1, proto2, label, margin=1.0):
     """
@@ -128,11 +131,22 @@ class LocalUpdate(object):
 
         args = self.args
         idxs_train = idxs[:int(1 * len(idxs))]
-        attack_round = [2,4,6,8,10]
+        #attack_round = [2,4,6,8,10]
         #dataset = DatasetSplit(dataset, idxs_train)
         if args.attack_type == 'label-flipping' and  args.num_attacker == self.idx: #self.global_round in attack_round and args.num_attacker > self.idx
-            dataset = label_flipping_majorityclass(dataset, idxs_train, args.flip_ratio)
-            print('after flipping', dataset.labels[idxs_train])
+            if self.global_round ==0:
+                flip_indices, new_labels = label_flipping_majorityclass(dataset, idxs_train, args.flip_ratio)
+                dataset.labels[flip_indices] = new_labels
+                dataset.targets [flip_indices] = new_labels
+                print('after flipping', dataset.labels[idxs_train])
+            # Count instances by class after flipping
+
+            unique_labels, counts = np.unique(dataset.labels[idxs_train], return_counts=True)
+            
+            # Print the number of instances for each class
+            for label, count in zip(unique_labels, counts):
+                print(f"Class {label}: {count} instances")
+            
         print(f'len of train dataset: {len(idxs_train)}')
         trainloader = DataLoader(DatasetSplit(dataset, idxs_train),
                                  batch_size=self.args.local_bs, shuffle=True, drop_last=False)
@@ -672,6 +686,7 @@ class LocalUpdate(object):
         epoch_loss['total'] = sum(epoch_loss['total']) / len(epoch_loss['total'])
         epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
         epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
+
 
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 

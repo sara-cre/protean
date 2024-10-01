@@ -58,7 +58,7 @@ def reconstruct_input(args, projection_model, C_i,
         assert protos.device == X_hat.device, f"Device mismatch: protos {protos.device}, X_hat {X_hat.device}"
         
         # 10. Compute the MSE loss between projected X_hat and C_i
-        loss_mse = F.mse_loss(protos, C_i, reduction='sum')
+        loss_mse = mse_loss(protos, C_i)#, reduction='sum')
         
         # Debugging: Check if loss requires gradients and has grad_fn
         if iteration == 0:
@@ -284,7 +284,7 @@ def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label,idx
     mse = mean_squared_error(X_original, reconstructed_inputs)
 
     print(f"Class {label}: Squared L2 Distance = {squared_l2_distance.item():.4f}", f"MSE = {mse:.4f}")
-    return squared_l2_distance.item()
+    return mse
 
 
 def evaluate_reconstruction__(args, reconstructed_inputs, train_dataset, label):
@@ -353,4 +353,78 @@ def evaluate_reconstruction_(reconstructed_inputs, sampled_original_data):
     
     
     return {"Cosine Similarity": similarity_scores, "MSE": mse_scores}
+
+def get_feature_range(train_dataset, idxs):
+    """
+    Compute the min and max for each feature across the specified subset of the dataset.
+    
+    Args:
+        train_dataset (Dataset): The entire training dataset.
+        idxs (list or Tensor): Indices of the subset to consider.
+        
+    Returns:
+        min_vals (Tensor): Minimum values per feature.
+        max_vals (Tensor): Maximum values per feature.
+    """
+    subset = DatasetSplit(train_dataset, idxs)
+    data = torch.stack([data for data, label in subset])
+    min_vals = data.min(dim=0).values
+    max_vals = data.max(dim=0).values
+    return min_vals, max_vals
+
+
+
+def generate_random_guess(min_vals, max_vals, device):
+    """
+    Generate a random guess within the feature range using numpy's uniform distribution.
+    
+    Args:
+        min_vals (Tensor): Minimum values per feature.
+        max_vals (Tensor): Maximum values per feature.
+        device (torch.device): Device to place the tensor on.
+        
+    Returns:
+        X_random (Tensor): Randomly generated input tensor.
+    """
+    # Ensure min_vals and max_vals are on CPU and convert to NumPy
+    min_vals_np = min_vals.detach().cpu().numpy()
+    max_vals_np = max_vals.detach().cpu().numpy()
+    
+    # Generate a single random sample using numpy.uniform for each feature
+    # np.random.uniform can accept arrays for low and high to generate element-wise
+    random_np = np.random.uniform(low=min_vals_np, high=max_vals_np)
+    
+    # Convert the NumPy array back to a PyTorch tensor
+    X_random = torch.from_numpy(random_np).float().to(device)
+    
+    return X_random
+
+def compute_baseline_mse(args, train_dataset, label, idxs):
+    """
+    Compute the baseline MSE using a random guess.
+    
+    Args:
+        args: Arguments containing device information.
+        train_dataset (Dataset): The entire training dataset.
+        label (int): The class label to consider.
+        idxs (list or Tensor): Indices of the subset to consider.
+        
+    Returns:
+        baseline_mse (float): The MSE of the random guess.
+    """
+    train_subset = DatasetSplit(train_dataset, idxs)
+    train_filtered = [data for data, lbl in train_subset if lbl.item() == label]
+    
+    if not train_filtered:
+        print(f"No images found for label {label}")
+        return None
+    
+    X_original = torch.stack(train_filtered).mean(dim=0)
+    
+    min_vals, max_vals = get_feature_range(train_dataset, idxs)
+    X_random = generate_random_guess(min_vals, max_vals, args.device)
+    
+    mse = F.mse_loss(X_random, X_original).item()
+    print(f"Baseline MSE (Random Guess) for Class {label}: {mse:.4f}")
+    return mse
 
