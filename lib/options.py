@@ -91,8 +91,10 @@ def args_parser():
     parser.add_argument('--num_attacker', type=float, default=1, help='index of the attacker')
     parser.add_argument('--attack_round', type=int, default=0, help='attack round')
 
-    parser.add_argument('--proto_robust', type=bool, default=False, help='proto robust')
-    parser.add_argument('--outlier_detection', type=bool, default=False, help='outlier detection')
+    #parser.add_argument('--proto_robust', type=bool, default=False, help='proto robust')
+    parser.add_argument('--outlier_type', type=str, default='none', help='outlier type: none, intra, inter_distance, inter_forest, multi_krum')
+    parser.add_argument('--eliminate_outlier', type=bool, default=False, help='eliminate outlier')
+    #parser.add_argument('--outlier_detection', type=bool, default=False, help='outlier detection')
     parser.add_argument('--inference', type=bool, default=False, help='inference')
     parser.add_argument('--dp', type=bool, default=False, help='differential privacy')
     

@@ -35,7 +35,7 @@ from update import test_inference_all_classes, test_inference_metrics_proto, tes
 from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
 from inference import reconstruct_input,  evaluate_reconstruction, compute_baseline_mse #sample_original_data,
 from poisoning import class_wise_outlier_detection, evaluate_outlier_detection, determine_attacker_outlier_status
-from poisoning import intra_client_analysis, get_min_prototype_distances, inter_client_analysis, get_min_prototype_distances_simple
+from poisoning import intra_client_analysis, get_min_prototype_distances, inter_client_analysis, get_min_prototype_distances_simple, inter_client_analysis_max_distance, inter_client_analysis_isolation_forest
 
 def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
     assert client_mode in ['none', 'representation', 'out_layer', 'interpolate']
@@ -971,39 +971,62 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 local_model.load_state_dict(model_state_dict, strict=False)
                 local_model_list[idx] = local_model"""
         elif aggregated == 'all_layers':
-            if args.proto_robust:
-                # Perform anomaly detection before aggregating prototypes
-                #s = intra_client_analysis(local_protos, args)
-                #print('Intra-client analysis:', s)
-                get_min_prototype_distances(local_protos, args)
-                inter_client_analysis(local_protos, args)
-                trusted_clients = proto_anomaly_detection(local_protos, args)
+            #if args.proto_robust:
+            # Perform anomaly detection before aggregating prototypes
+            #s = intra_client_analysis(local_protos, args)
+            #print('Intra-client analysis:', s)
+            """get_min_prototype_distances(local_protos, args)
+            inter_client_analysis(local_protos, args)
+            trusted_clients = proto_anomaly_detection(local_protos, args)
 
-                # Update local_model_list to only include trusted clients
-                # For simplicity, we will use indices of trusted clients
-                trusted_idxs = [idx for idx in idxs_users if idx in trusted_clients]
-                print("-----------------------------------------")
-                print(f'Trusted clients: {trusted_idxs}')
-                print("-----------------------------------------")
-                if args.num_attacker in trusted_clients:
-                    print('Attacker not eliminated')
-                else:
-                    print('Attacker eliminated')
-
+            # Update local_model_list to only include trusted clients
+            # For simplicity, we will use indices of trusted clients
+            trusted_idxs = [idx for idx in idxs_users if idx in trusted_clients]
+            print("-----------------------------------------")
+            print(f'Trusted clients: {trusted_idxs}')
+            print("-----------------------------------------")
+            if args.num_attacker in trusted_clients:
+                print('Attacker not eliminated')
+            else:
+                print('Attacker eliminated')"""
+            if args.outlier_type == 'intra':
+                    
                 results = get_min_prototype_distances_simple(local_protos, args)
                 print('Min distances:', results)
                 eliminated_client = [results['client_id']]
                 #correct_clients = [idx for idx in idxs_users if idx not in eliminated_client]
-                local_weights_correct = [local_weights[i] for i, idx in enumerate(idxs_users) if idx not in eliminated_client]
-                global_weights = average_weights_(local_weights_correct)
+                
                 #trusted_local_weights = [local_weights[i] for i, idx in enumerate(idxs_users) if idx in trusted_clients]
                 # Aggregate weights
                 #global_weights = average_weights_(trusted_local_weights)
+            elif args.outlier_type == 'inter_distance':
+                results = inter_client_analysis_max_distance(local_protos, args)
+                print('Max distances:', results)
+                eliminated_client = [results['client_id']]
+                
+            elif args.outlier_type == 'inter_forest':
+                results = inter_client_analysis_isolation_forest(local_protos, args)
+                print('Isolation forest:', results)
+                eliminated_client = [results['client_id']]
+            elif args.outlier_type == 'multi_krum':
+                global_weights_krum, eliminated_client = multi_krum(args, local_weights, 0, args.num_users-2)
+                print('Eliminated:', eliminated_client)
+            if args.eliminate_outlier and args.outlier_type in ['intra', 'inter_distance', 'inter_forest', 'multi_krum']:
+                if args.outlier_type in ['multi_krum']:
+                    global_weights = global_weights_krum
+                    global_protos = proto_aggregation({idx: local_protos[idx]  for i, idx in enumerate(idxs_users) if idx not in eliminated_client})
+
+                else: 
+                    local_weights_correct = [local_weights[i] for i, idx in enumerate(idxs_users) if idx not in eliminated_client]
+                    global_weights = average_weights_(local_weights_correct)
+                    global_protos = proto_aggregation({idx: local_protos[idx]  for i, idx in enumerate(idxs_users) if idx not in eliminated_client})
+            
             else:
                 global_weights = average_weights_(local_weights)
+                global_protos = proto_aggregation(local_protos)
             # update global weights
 
-            if args.outlier_detection:
+            """if args.outlier_detection:
                 outliers_per_class = class_wise_outlier_detection( local_protos,args.num_classes)
                 attacked_clients = [args.num_attacker]
                 #metrics = evaluate_outlier_detection(outliers_per_class, attacked_clients, args.num_users, args.num_classes)
@@ -1016,7 +1039,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 if  args.num_attacker in eliminated:
                     print('Attacker eliminated')
                 else:
-                    print('Attacker not eliminated')
+                    print('Attacker not eliminated')"""
             #global_weights = average_weights_(local_weights)
             global_model_ = copy.deepcopy(global_model)
             global_model_.load_state_dict(global_weights, strict=True)
@@ -1033,10 +1056,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             
 
         # update global protos
-        if args.proto_robust:
+        """if args.proto_robust:
             global_protos = proto_aggregation({idx: local_protos[idx] for idx in trusted_idxs})
         else:
-            global_protos = proto_aggregation(local_protos)
+            global_protos = proto_aggregation(local_protos)"""
 
         loss_avg = sum(local_losses) / len(local_losses)
         train_loss.append(loss_avg)

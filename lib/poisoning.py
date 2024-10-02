@@ -716,3 +716,216 @@ def get_min_prototype_distances_simple(
     }
     
     return results
+
+
+def inter_client_analysis_max_distance(
+    local_protos: Dict[int, Dict[str, torch.Tensor]], 
+    args
+) -> Dict[str, any]:
+    """
+    Identifies clients with the highest distances per class and determines the overall maximum distance across all classes and clients.
+    
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing the following attributes:
+            - top_k (int): Number of top clients to identify per class based on distance.
+    
+    Returns:
+    - result (dict):
+        Dictionary containing:
+            - 'high_distance_clients': Dict mapping each class label to a list of clients with their distances.
+            - 'global_max': Dict containing the overall maximum distance, client ID, and class label.
+    """
+    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
+    high_distance_clients = {}  # To store results per class
+
+    # Initialize variables to track the overall maximum distance
+    global_max_distance = -float('inf')
+    global_max_client_id = None
+    global_max_class_label = None
+
+    # Organize prototypes by class
+    class_protos = {}
+    for client_id, protos in local_protos.items():
+        for class_label, proto in protos.items():
+            class_protos.setdefault(class_label, []).append((client_id, proto))
+
+    # Analyze each class separately
+    for class_label, proto_list in class_protos.items():
+        num_clients = len(proto_list)
+        if num_clients < 2:
+            print(f"Class '{class_label}': Not enough prototypes to compute distances.")
+            high_distance_clients[class_label] = []
+            continue  # No comparison possible
+
+        # Stack all prototypes into a tensor for efficient computation
+        prototypes = torch.stack([proto for _, proto in proto_list])  # Shape: (num_clients, feature_dim)
+
+        # Compute the mean prototype
+        mean_proto = torch.mean(prototypes, dim=0).detach()  # Shape: (feature_dim,)
+
+        # Compute distances of each prototype to the mean prototype within a no_grad context
+        with torch.no_grad():
+            distances = F.pairwise_distance(prototypes, mean_proto.unsqueeze(0), p=2)
+            distances = distances.detach().cpu().numpy()  # Convert to NumPy array safely
+
+        # Pair each client with their distance
+        client_distances = []
+        for i in range(num_clients):
+            client_id, _ = proto_list[i]
+            dist = distances[i]
+            client_distances.append({'client_id': client_id, 'distance': dist})
+
+            # Update global maximum if necessary
+            if dist > global_max_distance:
+                global_max_distance = dist
+                global_max_client_id = client_id
+                global_max_class_label = class_label
+
+        # Sort clients based on distance in descending order and select top_k
+        sorted_clients = sorted(client_distances, key=lambda x: x['distance'], reverse=True)
+        top_clients = sorted_clients[:top_k]
+
+        # Store the results
+        high_distance_clients[class_label] = top_clients
+
+        # Print the results for the current class
+        print(f"Class '{class_label}': Top {top_k} client(s) with highest distances:")
+        for client in top_clients:
+            print(f"  - Client {client['client_id']}: Distance = {client['distance']:.4f}")
+        print()  # Blank line for readability
+
+    # After processing all classes, print the overall maximum distance details
+    if global_max_client_id is not None and global_max_class_label is not None:
+        print("=== Overall Maximum Distance ===")
+        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the maximum distance of {global_max_distance:.4f}.")
+    else:
+        print("No maximum distance found across classes and clients.")
+
+    # Compile the results into a single dictionary
+    result = {
+        'high_distance_clients': high_distance_clients,
+        'client_id': global_max_client_id,
+        'class_label': global_max_class_label,
+        'distance': global_max_distance if global_max_client_id is not None else None
+    
+    }
+
+    return result
+
+
+def inter_client_analysis_isolation_forest(
+    local_protos: Dict[int, Dict[str, torch.Tensor]], 
+    args
+) -> Dict[str, any]:
+    """
+    Identifies anomalous clients per class using Isolation Forest and determines
+    the overall client-class combination with the highest anomaly score.
+    
+    Parameters:
+    - local_protos (dict):
+        Dictionary where keys are client indices and values are dictionaries mapping
+        class labels to prototype tensors.
+    - args:
+        An object containing the following attributes:
+            - top_k (int): Number of top anomalous clients to identify per class based on anomaly score.
+    
+    Returns:
+    - result (dict):
+        Dictionary containing:
+            - 'anomalous_clients_per_class': Dict mapping each class label to a list of anomalous clients with their scores.
+            - 'global_max_anomaly': Dict containing the highest anomaly score, client ID, and class label.
+    """
+    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
+    anomalous_clients_per_class = {}  # To store results per class
+
+    # Initialize variables to track the overall maximum anomaly score
+    global_max_anomaly_score = -np.inf
+    global_max_client_id = None
+    global_max_class_label = None
+
+    # Organize prototypes by class
+    class_protos = {}
+    for client_id, protos in local_protos.items():
+        for class_label, proto in protos.items():
+            class_protos.setdefault(class_label, []).append((client_id, proto))
+
+    # Analyze each class separately
+    for class_label, proto_list in class_protos.items():
+        num_clients = len(proto_list)
+        if num_clients < 2:
+            print(f"Class '{class_label}': Not enough prototypes to perform anomaly detection.")
+            anomalous_clients_per_class[class_label] = []
+            continue  # Skip to the next class
+
+        # Prepare data for Isolation Forest
+        # Convert prototype tensors to numpy arrays
+        client_ids = []
+        prototypes = []
+        for client_id, proto in proto_list:
+            client_ids.append(client_id)
+            prototypes.append(proto.detach().cpu().numpy())  # Ensure tensor is detached and on CPU
+
+        prototypes_np = np.vstack(prototypes)  # Shape: (num_clients, feature_dim)
+
+        # Initialize Isolation Forest
+        # You can adjust parameters like contamination based on your specific needs
+        iso_forest = IsolationForest(contamination='auto', random_state=42)
+        
+        # Fit Isolation Forest
+        iso_forest.fit(prototypes_np)
+        
+        # Predict anomaly scores (the lower, the more abnormal)
+        anomaly_scores = iso_forest.decision_function(prototypes_np)  # Higher scores are less abnormal
+        # To make higher scores indicate more abnormal, invert the scores
+        anomaly_scores = -anomaly_scores  # Now, higher scores indicate more abnormal
+
+        # Combine client IDs with their anomaly scores
+        client_anomaly_scores = list(zip(client_ids, anomaly_scores))
+
+        # Sort clients based on anomaly scores in descending order
+        sorted_clients = sorted(client_anomaly_scores, key=lambda x: x[1], reverse=True)
+
+        # Select top_k anomalous clients
+        top_anomalous_clients = sorted_clients[:top_k]
+
+        # Store the results
+        anomalous_clients_per_class[class_label] = [
+            {'client_id': client_id, 'anomaly_score': score} 
+            for client_id, score in top_anomalous_clients
+        ]
+
+        # Print the results for the current class
+        print(f"Class '{class_label}': Top {top_k} anomalous client(s):")
+        for client in top_anomalous_clients:
+            print(f"  - Client {client[0]}: Anomaly Score = {client[1]:.4f}")
+        print()  # Blank line for readability
+
+        # Update the global maximum anomaly score if necessary
+        if top_anomalous_clients:
+            class_max_score = top_anomalous_clients[0][1]
+            if class_max_score > global_max_anomaly_score:
+                global_max_anomaly_score = class_max_score
+                global_max_client_id = top_anomalous_clients[0][0]
+                global_max_class_label = class_label
+
+    # After processing all classes, print the overall maximum anomaly details
+    if global_max_client_id is not None and global_max_class_label is not None:
+        print("=== Overall Maximum Anomaly ===")
+        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the highest anomaly score of {global_max_anomaly_score:.4f}.")
+    else:
+        print("No anomalies detected across classes and clients.")
+
+    # Compile the results into a single dictionary
+    result = {
+        'anomalous_clients_per_class': anomalous_clients_per_class,
+        'client_id': global_max_client_id,
+        'class_label': global_max_class_label,
+        'anomaly_score': global_max_anomaly_score if global_max_client_id is not None else None
+    
+    }
+
+    return result
