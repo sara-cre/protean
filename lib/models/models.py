@@ -219,6 +219,40 @@ class CustomCNN(nn.Module):
         return F.log_softmax(x, dim=1), x1 
 
 
+class EdgeCustomCNN(nn.Module):
+    def __init__(self, input_features, num_classes):
+        super(CustomCNN, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=3)  # Conv1D(32, 3)
+        self.pool1 = nn.MaxPool1d(kernel_size=2)                               # MaxPooling1D(2)
+
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3) # Conv1D(64, 3)
+        self.pool2 = nn.MaxPool1d(kernel_size=2)                                # MaxPooling1D(2)
+
+        self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3) # Conv1D(128, 3)
+        self.pool3 = nn.MaxPool1d(kernel_size=2)                                 # MaxPooling1D(2)
+
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(128 * 10, 64)  # Adjusted based on input size after convs and pools
+        self.fc2 = nn.Linear(64, num_classes)  # Output layer
+
+    def forward(self, x):
+        x = x.view(x.size(0), 1, -1)  # Ensure input shape is (batch_size, 1, 96)
+        x = F.relu(self.conv1(x))
+        x = self.pool1(x)
+
+        x = F.relu(self.conv2(x))
+        x = self.pool2(x)
+
+        x = F.relu(self.conv3(x))
+        x = self.pool3(x)
+
+        x = self.flatten(x)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+
+        # Return raw logits; no activation function here
+        return x
+
 
 class Proj(nn.Module):
     def __init__(self, args):
