@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 # Python version: 3.6
 
+#https://github.com/mnsalim/IoT-Related-Dataset-and-Resources
+#iotid20
 import copy, sys
 import time
 import numpy as np
@@ -25,7 +27,7 @@ if str(mod_dir) not in sys.path:
 from resnet import resnet18
 from options import args_parser
 from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack, test_inference_new_het_lt_new, test_inference_new_het_lt_new_op, test_inference_metrics, test_inference_by_attack_server
-from models import CNNMnist, CNNFemnist, CustomCNN
+from models import CNNMnist, CNNFemnist, CustomCNN, EdgeCustomCNN
 from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem, proto_anomaly_detection
 from plot import plot_fl_accuracies, plot_fedproto_accuracies, plot_metrics
 import time
@@ -119,6 +121,8 @@ def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
     for user_id in range(args.num_users):
         if args.dataset == 'cicids2017':
             local_model = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            local_model = EdgeCustomCNN(args=args)
         else:
             local_model = CustomCNN(args=args)
         model = copy.deepcopy(local_model)
@@ -126,6 +130,8 @@ def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
         weight, train_losss, train_acc = local_model.update_weights(args, user_id, model=model, global_round=0)
         if args.dataset == 'cicids2017':
             test_model = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            test_model = EdgeCustomCNN(args=args)
         else:
             test_model = CustomCNN(args=args)
         test_model.load_state_dict(weight)
@@ -197,6 +203,9 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
         if args.dataset == 'cicids2017':
             control_local = [DenseModel(args=args) for i in range(args.num_users)]
             control_global = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            control_local = [EdgeCustomCNN(args=args) for i in range(args.num_users)]
+            control_global = EdgeCustomCNN(args=args)
         else:
             local_controls = [CustomCNN(args=args) for i in range(args.num_users)]
             control_global = CustomCNN(args=args)
@@ -219,6 +228,8 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
     fpr_scores = []
     if args.dataset == 'cicids2017':
         local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    elif args.dataset == 'edgeiiot':
+        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
     else:
         local_model_list = [CustomCNN(args) for i in range(args.num_users)]
     local_weights_prev = []
@@ -776,6 +787,8 @@ def orderdict_tolist(w):
 def list_todict(weight_list, args):
     if args.dataset == 'cicids2017':
         model = DenseModel(args)
+    elif args.dataset == 'edgeiiot':
+        model = EdgeCustomCNN(args)
     else:
         model = CustomCNN(args)  # Assuming CustomCNN is your model
     state_dict = model.state_dict()
@@ -871,11 +884,14 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
     if args.dataset == 'cicids2017':
         local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    elif args.dataset == 'edgeiiot':
+        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
     else:
         local_model_list = [CustomCNN(args) for i in range(args.num_users)]
     local_weights_prev = []
     acc_byclient_byclass = []
     baseline_loss = []
+    acc_byround_byclass = []
     for round in tqdm(range(args.rounds)):
         local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
         print(f'\n | Global Training Round : {round + 1} |\n')
@@ -1087,19 +1103,31 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         #accuracies_file_w.write(str(acc_list_g))
         acc, f1, precision, recall, acc_macro, f1_macro, loss = 0, 0, 0, 0, 0, 0, 0
         acc_byclient_byclass = []
-        for idx in idxs_users:
+        
+        if aggregated == 'all_layers':
             if classic_eval:
-                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_ = test_inference_metrics_proto(args, local_model_list[idx], test_dataset, global_protos)
+                acc, f1, precision, recall, acc_macro, f1_macro, loss, acc_by_class_ = test_inference_metrics_proto(args, global_model, test_dataset, global_protos)
             else:
-                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_ = test_inference_metrics_proto_new(args,idx, local_model_list[idx], test_dataset, global_protos, classes_distribution)
-            acc += acc_/args.num_users
-            f1 += f1_/args.num_users
-            precision += precision_/args.num_users
-            recall += recall_/args.num_users
-            acc_macro += acc_macro_/args.num_users
-            f1_macro += f1_macro_/args.num_users
-            loss += loss_/args.num_users
+                acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics_proto_new(args,idx, global_model, test_dataset, global_protos, classes_distribution)
+            
+            for idx in idxs_users:
+                acc_byclient_byclass.append(acc_by_class_)
+            acc_byround_byclass.append(acc_by_class_)
+        else:
+            for idx in idxs_users:
+                if classic_eval:
+                    acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_ = test_inference_metrics_proto(args, local_model_list[idx], test_dataset, global_protos)
+                else:
+                    acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_ = test_inference_metrics_proto_new(args,idx, local_model_list[idx], test_dataset, global_protos, classes_distribution)
+                acc += acc_/args.num_users
+                f1 += f1_/args.num_users
+                precision += precision_/args.num_users
+                recall += recall_/args.num_users
+                acc_macro += acc_macro_/args.num_users
+                f1_macro += f1_macro_/args.num_users
+                loss += loss_/args.num_users
             acc_byclient_byclass.append(acc_by_class_)
+            
         print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
         #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
         accuracies.append(acc)
@@ -1130,6 +1158,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
     with open(file_acc_byclient_byclass, 'w') as file:
         file.write(str(acc_byclient_byclass))
+    file.close()
+    file_acc_byround_byclass = file_folder + 'acc_byround_byclass_' + file_ext + '.txt'
+    with open(file_acc_byround_byclass, 'w') as file:
+        file.write(str(acc_byround_byclass))
     file.close()
 
     with open(outlier_file, 'a') as file:
@@ -1482,6 +1514,11 @@ def Federated(args):
             args.num_classes = 8
             local_model = CustomCNN(args=args)
             global_model = CustomCNN(args=args)
+        elif args.dataset == 'edgeiiot':
+            args.num_features = 97
+            args.num_classes = 15
+            local_model = EdgeCustomCNN(args=args)
+            global_model = EdgeCustomCNN(args=args)
         elif args.dataset == 'xiiotid':
             local_model = CustomCNN(args=args)
             global_model = CustomCNN(args=args)
@@ -1580,7 +1617,7 @@ if __name__ == '__main__':
         k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
     elif args.dataset == 'femnist':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
-    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd' or args.dataset == 'cicids2017':
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd' or args.dataset == 'cicids2017' or args.dataset == 'edgeiiot':
         k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
     print("k_list", k_list)
 
@@ -1636,6 +1673,11 @@ if __name__ == '__main__':
             args.num_classes = 8
             local_model = CustomCNN(args=args)
             global_model = CustomCNN(args=args)
+        elif args.dataset == 'edgeiiot':
+            args.num_features = 97
+            args.num_classes = 15
+            local_model = EdgeCustomCNN(args=args)
+            global_model = EdgeCustomCNN(args=args)
         elif args.dataset == 'xiiotid':
             local_model = CustomCNN(args=args)
             global_model = CustomCNN(args=args)
@@ -1650,7 +1692,14 @@ if __name__ == '__main__':
         local_model_list.append(local_model)
         global_model.to(args.device)
         global_model.train()
-
+    if args.dataset == 'edgeiiot':
+        args.local_bs = 256
+        args.lr = 0.001
+        args.criterion = 'cross_entropy'
+    elif args.dataset == 'cicids2017':
+        args.local_bs = 256
+        args.lr = 0.001
+        args.criterion = 'cross_entropy'
     unique_labels = set(range(args.num_classes))
     # Save classes distribution between clients
     """classes_distribution = []
@@ -1695,7 +1744,7 @@ if __name__ == '__main__':
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
             
-    for alpha in [0.25]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+    for alpha in [0.75]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
         args.alpha = alpha
         train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
         unique_labels = set(range(args.num_classes))
@@ -1740,80 +1789,87 @@ if __name__ == '__main__':
                 for attackers in [2,6]:
                     args.num_attackers = attackers"""
         #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['fedproto']:#, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+        for alg in ['fedproto']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
             args.alg = alg
             classic_eval = True
             #args.proto_robust = True
             args.attack_type = 'label-flipping'
-            for attack_perc in [0.1]:#,0.5,0.75]:
+            for attack_perc in [0.25]:#,0.5,0.75]:
                 args.flip_ratio = attack_perc
                 print('*****************************flip ratio********************************: ', args.flip_ratio)
-                for attackers in [4,5]:#,6]:
+                for attackers in [5]:#,6]:
                     #args.num_attackers = attackers
                     args.num_attacker = attackers
                     
-                    args.eliminate_outlier = True
+                    """args.eliminate_outlier = True
                     for outlier_type in [ 'intra', 'inter_distance', 'inter_forest','multi_krum']: #'intra', 'inter_distance', 'inter_forest', 
-                        args.outlier_type = outlier_type
+                        args.outlier_type = outlier_type"""
 
 
-                        print('*****************************Running algorithm********************************: ', args.alg)
-                        if args.alg == 'fedavg' or args.alg == 'fedprox':
-                            print('Running federated averaging')
-                            if args.dataset == 'cicids2017':
-                                global_model = DenseModel(args)
-                            else:
-                                global_model = CustomCNN(args)
-                            Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        elif args.alg == 'fedproto':
-                            aggregated = 'all_layers' #'none'#'mapping_layers' #
-                            if args.dataset == 'cicids2017':
-                                local_model_list = [DenseModel(args) for i in range(args.num_users)]
-                            else:
-                                local_model_list = [CustomCNN(args) for i in range(args.num_users)]
-                            FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
-                        elif args.alg == 'fedpcl':
-                            backbone = Embedder(args)
-                            local_model_list = [Proj(args=args) for i in range(args.num_users)]
-                            acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
-                            acc_mean = acc_mtx.mean().item()
-                            acc_std = acc_mtx.std().item()
-                            print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
-
-                        elif args.alg == 'fedopt':
-                            print('Not implemented yet')
-                        elif args.alg == 'beforefl':
-                            acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                    print('*****************************Running algorithm********************************: ', args.alg)
+                    if args.alg == 'fedavg' or args.alg == 'fedprox':
+                        print('Running federated averaging')
+                        if args.dataset == 'cicids2017':
+                            global_model = DenseModel(args)
+                        elif args.dataset == 'edgeiiot':
+                            global_model = EdgeCustomCNN(args)
                         else:
-                            if args.dataset == 'cicids2017':
-                                global_model = DenseModel(args)
-                            else:
-                                global_model = CustomCNN(args)
-                            Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        
-                        #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        if args.alg != 'beforefl':
-                            if args.attack_type == 'none':
-                                file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
-                            else:
-                                file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
-                            file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                            file_name_before_fl = file_folder_before + file_ext + '.txt'
-                            if args.attack_type == 'none':
-                                file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
-                            else:
-                                file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
-                            #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                            file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
-                            #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                            #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                            #output_file_name = file_folder + file_ext + '.pdf'
+                            global_model = CustomCNN(args)
+                        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    elif args.alg == 'fedproto':
+                        aggregated = 'all_layers' #'none'#'mapping_layers' #
+                        if args.dataset == 'cicids2017':
+                            local_model_list = [DenseModel(args) for i in range(args.num_users)]
+                        elif args.dataset == 'edgeiiot':
+                            local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+                        else:
+                            local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                    elif args.alg == 'fedpcl':
+                        backbone = Embedder(args)
+                        local_model_list = [Proj(args=args) for i in range(args.num_users)]
+                        acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+                        acc_mean = acc_mtx.mean().item()
+                        acc_std = acc_mtx.std().item()
+                        print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
 
-                            plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
-                            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                            file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
-                            #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
-                            if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
-                            
-                                plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)
+                    elif args.alg == 'fedopt':
+                        print('Not implemented yet')
+                    elif args.alg == 'beforefl':
+                        acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                    else:
+                        if args.dataset == 'cicids2017':
+                            global_model = DenseModel(args)
+                        elif args.dataset == 'edgeiiot':
+                            global_model = EdgeCustomCNN(args)
+                        else:
+                            global_model = CustomCNN(args)
+                        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    
+                    #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                    if args.alg != 'beforefl':
+                        if args.attack_type == 'none':
+                            file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+                        else:
+                            file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+                        file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                        file_name_before_fl = file_folder_before + file_ext + '.txt'
+                        if args.attack_type == 'none':
+                            file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
+                        else:
+                            file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
+                        #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                        file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                        print('file_ext_after: ', file_ext_after)
+                        file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+                        #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                        #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                        #output_file_name = file_folder + file_ext + '.pdf'
+
+                        plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
+                        file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                        file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
+                        #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
+                        if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
+                        
+                            plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)

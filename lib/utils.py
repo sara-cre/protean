@@ -9,7 +9,7 @@ from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal, mnist_noniid
 from sampling import femnist_iid, femnist_noniid, femnist_noniid_unequal, femnist_noniid_lt
 from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all, xiiotid_noniid_dirichlet, xiiotid_noniid_dirichlet2
 import femnist
-from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data, load_data_cicids2017
+from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data, load_data_cicids2017, load_data_edge_iiot
 import numpy as np
 import torch.nn.functional as F
 from sklearn.ensemble import IsolationForest
@@ -126,7 +126,7 @@ def get_dataset(args, n_list, k_list):
                 # Chose euqal splits for every user
                 user_groups, classes_list = cifar100_noniid(args, train_dataset, args.num_users, n_list, k_list)
                 user_groups_lt = cifar100_noniid_lt(test_dataset, args.num_users, classes_list)
-    elif args.dataset == 'xiiotid' or args.dataset == '5gnidd' or args.dataset == 'ciciot' or args.dataset == 'cicids2017':
+    elif args.dataset == 'xiiotid' or args.dataset == '5gnidd' or args.dataset == 'ciciot' or args.dataset == 'cicids2017' or args.dataset == 'edgeiiot':
         if args.dataset == '5gnidd':
             train_dataset, test_dataset = load_data_5g_nidd(args)
         elif args.dataset == 'ciciot':
@@ -135,6 +135,8 @@ def get_dataset(args, n_list, k_list):
             train_dataset, test_dataset = load_data_x_iiotid(args)
         elif args.dataset == 'cicids2017':
             train_dataset, test_dataset = load_data_cicids2017(args)
+        elif args.dataset == 'edgeiiot':
+            train_dataset, test_dataset = load_data_edge_iiot()
         if args.iid:
             user_groups, classes_list = xiiotid_iid(train_dataset, args.num_users)
             user_groups_lt = mnist_iid(test_dataset, args.num_users)

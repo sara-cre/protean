@@ -220,8 +220,10 @@ class CustomCNN(nn.Module):
 
 
 class EdgeCustomCNN(nn.Module):
-    def __init__(self, input_features, num_classes):
-        super(CustomCNN, self).__init__()
+    def __init__(self, args):
+        super(EdgeCustomCNN, self).__init__()
+        input_features = args.num_features
+        num_classes = args.num_classes
         self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=3)  # Conv1D(32, 3)
         self.pool1 = nn.MaxPool1d(kernel_size=2)                               # MaxPooling1D(2)
 
@@ -247,11 +249,11 @@ class EdgeCustomCNN(nn.Module):
         x = self.pool3(x)
 
         x = self.flatten(x)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x1 = F.relu(self.fc1(x))
+        x = self.fc2(x1)
 
         # Return raw logits; no activation function here
-        return x
+        return x, x1
 
 
 class Proj(nn.Module):

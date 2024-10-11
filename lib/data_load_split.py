@@ -665,6 +665,114 @@ def load_data_cic_iot(path='../dataset/cic-iot-2023/'):
 from sklearn.utils import shuffle
 def load_data_edge_iiot():
     filename = '../dataset/edge-iiot-set/preprocessed_EdgeIIoT.csv'
+    try:
+        data = pd.read_csv(filename)
+        print(f"Loaded data shape: {data.shape}")
+    except FileNotFoundError:
+        print(f"File not found: {filename}")
+        exit(1)
+
+    drop_columns = ["frame.time", "ip.src_host", "ip.dst_host", "arp.src.proto_ipv4","arp.dst.proto_ipv4", 
+         "http.file_data","http.request.full_uri","icmp.transmit_timestamp",
+         "http.request.uri.query", "tcp.options","tcp.payload","tcp.srcport",
+         "tcp.dstport", "udp.port", "mqtt.msg"]
+
+    if all(col in data.columns for col in drop_columns):
+        data.drop(drop_columns, axis=1, inplace=True)
+        print(f"Dropped columns: {drop_columns}")
+    else:
+        print("Some columns to drop are missing. Proceeding without dropping.")
+
+    # Optional: Drop rows with any missing values
+    # data.dropna(axis=0, how='any', inplace=True)
+
+    # Remove duplicate rows
+    initial_shape = data.shape
+    data.drop_duplicates(subset=None, keep="first", inplace=True)
+    print(f"Removed duplicates: {initial_shape} -> {data.shape}")
+
+    # Shuffle the dataset
+    df3 = shuffle(data, random_state=42)
+    print("Shuffled the dataset.")
+
+    # Uncomment and modify the following lines if you need to encode categorical variables
+    """
+    def encode_text_dummy(df, name):
+        dummies = pd.get_dummies(df[name])
+        for x in dummies.columns:
+            dummy_name = f"{name}-{x}"
+            df[dummy_name] = dummies[x]
+        df.drop(name, axis=1, inplace=True)
+
+    encode_text_dummy(df3,'http.request.method')
+    encode_text_dummy(df3,'http.referer')
+    encode_text_dummy(df3,"http.request.version")
+    encode_text_dummy(df3,"dns.qry.name.len")
+    encode_text_dummy(df3,"mqtt.conack.flags")
+    encode_text_dummy(df3,"mqtt.protoname")
+    encode_text_dummy(df3,"mqtt.topic")
+    """
+
+    print(f"Dataset shape after preprocessing: {df3.shape}")
+
+    # Features and Labels
+    X = df3.drop('Attack_type', axis=1)
+    y = df3['Attack_type']
+    # Keep a percentage of class Normal not yet completed
+    """normal_percentage = 0.05
+    normal_indices = np.where(y == label_encoder.transform(['Normal']))[0]
+    num_normal_samples = int(normal_percentage * len(normal_indices))
+    #keep a percentage of class DDoS_UDP not yet completed
+    DDoS_UDP_percentage = 0.5
+    DDoS_UDP_indices = np.where(y == label_encoder.transform(['DDoS_UDP']))[0]
+    num_DDoS_UDP_samples = int(DDoS_UDP_percentage * len(DDoS_UDP_indices))"""
+
+    # Label Encoding
+    label_encoder = LabelEncoder()
+    y = label_encoder.fit_transform(y)
+    class_names = label_encoder.classes_
+    # Print correspondence between labels and numbers given by encoder
+    for i, label in enumerate(label_encoder.classes_):
+        print(f"Label: {label} -> Number: {i}")
+    print("Label Encoding completed.")
+
+    # Verify label encoding
+    print("Sample Encoded Labels:", y[:10])
+    print("Unique Encoded Labels:", np.unique(y))
+
+    # Feature Scaling
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
+    X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+    print("Feature Scaling completed.")
+    print("Feature Scaling Verification:")
+    print(X_scaled.describe())
+
+    # Train-Test Split
+    X_train, X_test, Y_train, Y_test = train_test_split(
+        X_scaled, y, test_size=0.2, random_state=42, stratify=y
+    )
+    print("Train-Test split completed.")
+    print(f"Training set shape: {X_train.shape}")
+    print(f"Testing set shape: {X_test.shape}")
+
+    # Create PyTorch Datasets
+    train_dataset = DataFrameDataset(X_train, Y_train)
+    test_dataset = DataFrameDataset(X_test, Y_test)
+
+    print("---------------------------------------------------------")
+    print("Unique classes in training set:", np.unique(Y_train))
+    # Print number of instances in each class
+    class_counts = np.bincount(Y_train)
+    for i, count in enumerate(class_counts):
+        print(f"Class {i}: {count} instances")
+    print("Length of test dataset:", len(test_dataset))
+    #print("Any NaNs in training features:", np.isnan(train_dataset.X.numpy()).any())
+    #print("Any NaNs in training labels:", torch.isnan(train_dataset.y).any())
+    return train_dataset, test_dataset#, class_names
+
+def load_data_edge_iiot_():
+    filename = '../dataset/edge-iiot-set/preprocessed_EdgeIIoT.csv'
     data = pd.read_csv(filename)
     drop_columns = ["frame.time", "ip.src_host", "ip.dst_host", "arp.src.proto_ipv4","arp.dst.proto_ipv4", 
 
@@ -722,9 +830,13 @@ def load_data_edge_iiot():
     y = label_encoder.fit_transform(y)
     class_names = label_encoder.classes_
     # Keep a percentage of class Normal
-    normal_percentage = 0.01
+    normal_percentage = 0.05
     normal_indices = np.where(y == label_encoder.transform(['Normal']))[0]
     num_normal_samples = int(normal_percentage * len(normal_indices))
+    #keep a percentage of class DDoS_UDP
+    DDoS_UDP_percentage = 0.5
+    DDoS_UDP_indices = np.where(y == label_encoder.transform(['DDoS_UDP']))[0]
+    num_DDoS_UDP_samples = int(DDoS_UDP_percentage * len(DDoS_UDP_indices))
     
     selected_normal_indices = np.random.choice(normal_indices, size=num_normal_samples, replace=False)
     x = x.iloc[selected_normal_indices]
@@ -735,13 +847,14 @@ def load_data_edge_iiot():
     train_dataset = DataFrameDataset(X_train, Y_train)
     test_dataset = DataFrameDataset(X_test, Y_test)
     print("---------------------------------------------------------")
+    print ("in load_data_edge_iiot")
     print(np.unique(Y_train))
     #print number of instaces in each class
     class_counts = np.bincount(Y_train)
     for i, count in enumerate(class_counts):
         print(f"Class {i}: {count} instances")
     print("length of test dataset", test_dataset.__len__())
-    return train_dataset, test_dataset, class_names
+    return train_dataset, test_dataset#, class_names
 
     
 
