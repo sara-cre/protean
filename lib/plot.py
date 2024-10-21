@@ -55,7 +55,7 @@ def plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file
     plt.plot(rounds, accuracies, marker='o', linestyle='-', color='b', label='Accuracy')
     plt.plot(rounds, f1_scores, marker='o', linestyle='-', color='r', label='F1 Score')
     plt.plot(rounds, macro_accuracies, marker='o', linestyle='-', color='g', label='Macro Accuracy')
-    plt.plot(rounds, macro_f1_scores, marker='o', linestyle='-', color='m', label='Macro F1 Score')
+    #plt.plot(rounds, macro_f1_scores, marker='o', linestyle='-', color='m', label='Macro F1 Score')
     plt.plot(rounds, precision_scores, marker='o', linestyle='-', color='y', label='Precision Score')
     plt.ylim(0, 1)
     plt.xlabel('Round')

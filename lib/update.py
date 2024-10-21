@@ -134,11 +134,13 @@ class LocalUpdate(object):
         #attack_round = [2,4,6,8,10]
         #dataset = DatasetSplit(dataset, idxs_train)
         if args.attack_type == 'label-flipping' and  args.num_attacker == self.idx: #self.global_round in attack_round and args.num_attacker > self.idx
-            if self.global_round ==0:
-                flip_indices, new_labels = label_flipping_majorityclass(dataset, idxs_train, args.flip_ratio)
+            print('alredy flipped', args.alr_flipped)
+            if self.global_round ==0 and args.alr_flipped=='False':
+                flip_indices, new_labels = label_flipping_majorityclass(args, dataset, idxs_train, args.flip_ratio)
                 dataset.labels[flip_indices] = new_labels
                 dataset.targets [flip_indices] = new_labels
                 print('after flipping', dataset.labels[idxs_train])
+                args.alr_flipped = 'True'
             # Count instances by class after flipping
 
             unique_labels, counts = np.unique(dataset.labels[idxs_train], return_counts=True)
@@ -158,6 +160,28 @@ class LocalUpdate(object):
         # Set mode to train model
         model.train()
         epoch_loss = []
+        if self.args.weighted_loss:
+            # Define the total number of classes (7 in your case)
+            num_classes = args.num_classes
+
+            # Initialize class counts for all classes
+            class_counts = torch.zeros(num_classes, dtype=torch.float)
+
+            # Count the occurrences of each class in the client's dataset
+            for _, label in self.trainloader.dataset:
+                class_counts[label] += 1
+
+            # Handle cases where the client doesn't have certain classes
+            # Set counts for missing classes to 1 to avoid division by zero
+            class_counts[class_counts == 0] = 1.0
+
+            # Compute class weights: inverse of class frequency for the present classes
+            # For missing classes, their weight will effectively be ignored as we set their count to 1
+            class_weights = 1.0 / class_counts
+            class_weights = class_weights / class_weights.sum() * num_classes  # Normalize weights
+
+            # Use class weights in CrossEntropyLoss
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
 
         # Set optimizer for the local updates
         if self.args.optimizer == 'sgd':
@@ -690,6 +714,106 @@ class LocalUpdate(object):
 
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 
+    def update_weights_het_prox_weighted(self, args, idx, global_protos, model, global_round=round):
+        # Set mode to train model
+        torch.manual_seed(args.seed)
+        global_model = copy.deepcopy(model)
+        model.train()
+        epoch_loss = {'total': [], '1': [], '2': [], '3': []}
+
+        # Define the total number of classes (7 in your case)
+        num_classes = args.num_classes
+
+        # Initialize class counts for all classes
+        class_counts = torch.zeros(num_classes, dtype=torch.float)
+
+        # Count the occurrences of each class in the client's dataset
+        for _, label in self.trainloader.dataset:
+            class_counts[label] += 1
+
+        # Handle cases where the client doesn't have certain classes
+        # Set counts for missing classes to 1 to avoid division by zero
+        class_counts[class_counts == 0] = 1.0
+
+        # Compute class weights: inverse of class frequency for the present classes
+        # For missing classes, their weight will effectively be ignored as we set their count to 1
+        class_weights = 1.0 / class_counts
+        class_weights = class_weights / class_weights.sum() * num_classes  # Normalize weights
+
+        # Use class weights in CrossEntropyLoss
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+
+        # Set optimizer for the local updates
+        if self.args.optimizer == 'sgd':
+            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr, momentum=0.5)
+        elif self.args.optimizer == 'adam':
+            optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr, weight_decay=1e-4)
+
+        print(f"Trainloader length: {len(self.trainloader)}")
+        for iter in range(self.args.train_ep):
+            batch_loss = {'total': [], '1': [], '2': [], '3': []}
+            agg_protos_label = {}
+
+            for batch_idx, (images, label_g) in enumerate(self.trainloader):
+                images, labels = images.to(self.device), label_g.to(self.device)
+
+                # loss1: cross-entropy loss, loss2: proto distance loss
+                model.zero_grad()
+                log_probs, protos = model(images)
+                proximal_term = 0.0
+
+                for w, w_t in zip(model.parameters(), global_model.parameters()):
+                    proximal_term += (w - w_t).norm(2)
+
+                # LOSS
+                loss_prox = (self.mu / 2) * proximal_term
+
+                # Compute the weighted cross-entropy loss with class weights
+                loss1 = self.criterion(log_probs, labels)
+
+                loss_mse = nn.MSELoss()
+                if len(global_protos) == 0:
+                    loss2 = 0 * loss1
+                else:
+                    proto_new = copy.deepcopy(protos.data)
+                    i = 0
+                    for label in labels:
+                        if label.item() in global_protos.keys():
+                            proto_new[i, :] = global_protos[label.item()][0].data
+                        i += 1
+                    loss2 = loss_mse(proto_new, protos)
+
+                loss = loss1 + loss2 * args.ld + loss_prox
+
+                loss.backward()
+                optimizer.step()
+
+                for i in range(len(labels)):
+                    if label_g[i].item() in agg_protos_label:
+                        agg_protos_label[label_g[i].item()].append(protos[i, :])
+                    else:
+                        agg_protos_label[label_g[i].item()] = [protos[i, :]]
+
+                log_probs = log_probs[:, 0:args.num_classes]
+                _, y_hat = log_probs.max(1)
+                acc_val = torch.eq(y_hat, labels.squeeze()).float().mean()
+
+                if self.args.verbose and (batch_idx % 10 == 0):
+                    print(f"| Global Round: {global_round} | User: {idx} | Epoch: {iter} | [{batch_idx * len(images)}/{len(self.trainloader.dataset)} ({100. * batch_idx / len(self.trainloader):.0f}%)] "
+                        f"| Loss1: {loss1.item():.3f} | Loss2: {loss2.item():.3f} | LossProx: {loss_prox.item():.3f} | Combined: {loss.item():.3f} | Acc: {acc_val.item():.3f}")
+
+                batch_loss['total'].append(loss.item())
+                batch_loss['1'].append(loss1.item())
+                batch_loss['2'].append(loss2.item())
+            epoch_loss['total'].append(sum(batch_loss['total']) / len(batch_loss['total']))
+            epoch_loss['1'].append(sum(batch_loss['1']) / len(batch_loss['1']))
+            epoch_loss['2'].append(sum(batch_loss['2']) / len(batch_loss['2']))
+
+        epoch_loss['total'] = sum(epoch_loss['total']) / len(epoch_loss['total'])
+        epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
+        epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
+
+        return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 
 
     def update_weights_lg(self, args, idx, global_protos, global_avg_protos, backbone_list, model, global_round=round):

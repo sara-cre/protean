@@ -110,6 +110,8 @@ def load_data_cicids2017(args):
         print(f'Processing file: {file} for unique labels')
         for chunk in load_data_in_chunks([file], chunk_size):
             # Ensure 'Label' column exists
+            chunk.columns = chunk.columns.str.strip()
+            print(chunk.columns)
             if 'Label' not in chunk.columns:
                 raise ValueError(f"'Label' column not found in {file}")
             
@@ -144,6 +146,7 @@ def load_data_cicids2017(args):
             # Data Cleaning Steps
             # Drop columns with all NaNs
             chunk.dropna(axis=1, how='all', inplace=True)
+            chunk.columns = chunk.columns.str.strip()
 
             # Replace inf values with NaN and drop rows with NaN
             chunk.replace([np.inf, -np.inf], np.nan, inplace=True)

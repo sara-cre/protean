@@ -7,7 +7,7 @@ import torch
 from torchvision import datasets, transforms
 from sampling import mnist_iid, mnist_noniid, mnist_noniid_unequal, mnist_noniid_lt
 from sampling import femnist_iid, femnist_noniid, femnist_noniid_unequal, femnist_noniid_lt
-from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all, xiiotid_noniid_dirichlet, xiiotid_noniid_dirichlet2
+from sampling import cifar_iid, cifar100_noniid, cifar10_noniid, cifar100_noniid_lt, cifar10_noniid_lt, xiiotid_noniid, xiiotid_noniid_lt, xiiotid_iid, xiotid_noniid_lt_all, xiiotid_noniid_dirichlet, xiiotid_noniid_dirichlet2, xiiotid_noniid_dirichlet3
 import femnist
 from data_load_split import load_data_5g_nidd, load_data_cic_iot, load_data_x_iiotid, split_data, load_data_cicids2017, load_data_edge_iiot
 import numpy as np
@@ -151,6 +151,7 @@ def get_dataset(args, n_list, k_list):
                 classes_list_gt = classes_list
         else:
             user_groups, classes_list = xiiotid_noniid_dirichlet2(args, train_dataset, args.num_users, args.alpha)
+            #user_groups, classes_list = xiiotid_noniid_dirichlet3(args, train_dataset, args.num_users, args.alpha)
             user_groups_lt = xiotid_noniid_lt_all(args,test_dataset, args.num_users)
             classes_list_gt = classes_list
         #user_groups = mnist_iid(train_dataset, args.num_users)

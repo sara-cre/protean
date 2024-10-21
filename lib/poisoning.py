@@ -125,15 +125,16 @@ def label_flipping(dataset, idxs, ratio=0.1):
     return dataset
 import numpy as np
 
-def label_flipping_majorityclass(dataset, idxs, ratio=0.1, random_target=False):
+def label_flipping_majorityclass(args, dataset, idxs, ratio=0.1, random_target=False):
     # Convert targets to a NumPy array for efficient processing
     print("inside label_flipping_majorityclass")
     print("flipping ratio:", ratio)
+    print(type(dataset))
     print(type(dataset.targets))
     targets = np.array(dataset.targets)
     
     # Assuming get_majority_and_target_classes is defined elsewhere
-    majority_class, target_class = get_majority_and_target_classes(dataset, idxs)
+    majority_class, target_class = get_majority_and_target_classes(args, dataset, idxs)
     print("majority_class:", majority_class)
     
     # Find the global indices where the target is the majority class
@@ -167,12 +168,12 @@ def label_flipping_majorityclass(dataset, idxs, ratio=0.1, random_target=False):
     
     return flip_indices, new_labels
 
-def get_majority_and_target_classes(dataset, idxs):
+def get_majority_and_target_classes(args,dataset, idxs):
     targets = np.array(dataset.targets)
     
     class_counts = np.bincount(targets[idxs])  # Use NumPy array indexing here
     majority_class = np.argmax(class_counts)
-    mislabel_mapping = {
+    mislabel_mapping_old = {
             0: 3,  # C&C → Lateral_movement
             1: 2,  # Exfiltration → Exploitation
             2: 8,  # Exploitation → Weaponization
@@ -195,11 +196,33 @@ def get_majority_and_target_classes(dataset, idxs):
         7: 7,  # Tampering → Tampering
         8: 1   # Weaponization → Exfiltration
     }
+    if args.dataset == 'xiiotid':
+        mislabel_mapping = {
+            0: 1,  #C&C → Exfiltration
+            1: 8, #Exfiltration → Weaponization
+            2: 6, #Exploitation → Reconnaissance
+            3: 7, #Lateral_movement → Tampering
+            4: 0, #Normal → C&C
+            5: 0, #RDOS → C&C
+            6: 2, #Reconnaissance → Exploitation
+            7: 3, #Tampering → Lateral_movement
+            8: 1  #Weaponization → Exfiltration
+        }
+    elif args.dataset == '5gnidd':
+        mislabel_mapping = {
+            0:4,
+            1:2,
+            2:5,
+            3:6,
+            4:6,
+            5:2,
+            6:3
+        }
     target_class = mislabel_mapping[majority_class]
     return majority_class, target_class
 
 
-def determine_attacker_outlier_status(outliers_per_class, attacker_idx, dataset, idxs):
+def determine_attacker_outlier_status(args,outliers_per_class, attacker_idx, dataset, idxs):
     """
     Determines if a specific attacker is detected as an outlier in either the majority class or the target class.
     
@@ -217,7 +240,7 @@ def determine_attacker_outlier_status(outliers_per_class, attacker_idx, dataset,
                   'outlier_in_target_class': False
               }
     """
-    majority_class, target_class = get_majority_and_target_classes(dataset, idxs)
+    majority_class, target_class = get_majority_and_target_classes(args,dataset, idxs)
     outlier_status = {
         'outlier_in_majority_class': False,
         'outlier_in_target_class': False
@@ -989,7 +1012,7 @@ def get_classes_overlap_old(dataset):
     
     # Optional: Visualize the Confusion Matrix
     plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
     plt.xlabel('Cluster Labels')
     plt.ylabel('True Labels')
     plt.title('Confusion Matrix: True Labels vs Cluster Labels')
@@ -1064,7 +1087,7 @@ def map_cluster_labels(true_labels, cluster_labels):
 
 from scipy.optimize import linear_sum_assignment
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix, silhouette_score
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix, silhouette_score, adjusted_mutual_info_score
 import random
 
 from sklearn.decomposition import PCA
@@ -1075,7 +1098,7 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     #balanced, mapped = True, True
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if balanced:
-        max_samples_per_class = 10000
+        max_samples_per_class = 200
         print(f"Applying undersampling with max {max_samples_per_class} samples per class.")
         dataset = undersample_dataset(dataset, max_samples_per_class, seed=seed)
         print(f"Balanced dataset size: {len(dataset)}")
@@ -1106,12 +1129,16 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     labels = torch.cat(labels_list, dim=0).numpy()
     print(f"Features shape: {features.shape}, Labels shape: {labels.shape}")
     
+    scaling = False
     # 3. Preprocessing: Feature Scaling
-    print("Starting feature scaling")
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
-    print("Feature scaling completed")
-    
+    if scaling:
+        print("Starting feature scaling")
+        scaler = StandardScaler()
+        features_scaled = scaler.fit_transform(features)
+        print("Feature scaling completed")
+    else:
+        features_scaled = features
+        
     # 4. Apply KMeans clustering to the data
     print("Starting KMeans clustering")
     kmeans = KMeans(
@@ -1141,6 +1168,9 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     nmi = normalized_mutual_info_score(labels, cluster_labels_mapped)
     print("NMI computed")
     print("NMI:", nmi)
+    ami = adjusted_mutual_info_score(labels, cluster_labels_mapped)
+    print("AMI computed")
+    print("AMI:", ami)
     conf_matrix = confusion_matrix(labels, cluster_labels_mapped)
     print("Confusion matrix computed")
     print( "Confusion matrix:", conf_matrix)
@@ -1151,7 +1181,7 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     metrics = {
         'Adjusted Rand Index': ari,
         'Normalized Mutual Information': nmi,
-
+        'Adjusted Mutual Information': ami,
         'Confusion Matrix': conf_matrix
     }
     print("Evaluation metrics computed")
@@ -1160,7 +1190,7 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     # 7. Visualization: Confusion Matrix
     print("Starting visualization")
     plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
     plt.xlabel('Cluster Labels')
     plt.ylabel('True Labels')
     plt.title('Confusion Matrix: True Labels vs Cluster Labels')
@@ -1211,6 +1241,7 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
     # 8. Print Metrics
     print("Adjusted Rand Index (ARI):", ari)
     print("Normalized Mutual Information (NMI):", nmi)
+    print("Adjusted Mutual Information (AMI):", ami)
     print("Cluster to True Label Mapping:", mapping)
 
     # 9. Determine the most overlapping class for each class
@@ -1220,7 +1251,7 @@ def get_classes_overlap(dataset,balanced=True, mapped=True):
    
 
     
-    return metrics, cluster_labels_mapped, mapping
+    return metrics, cluster_labels_mapped, mapping, labels, cluster_labels_mapped
 
 
 from collections import defaultdict
@@ -1262,3 +1293,275 @@ def undersample_dataset(dataset, max_samples_per_class, seed=1234):
 
     balanced_subset = Subset(dataset, selected_indices_all)
     return balanced_subset
+
+
+def compute_correlation(true_labels, predicted_labels):
+    """
+    Compute the confusion matrix and a correlation-like matrix between true labels based on shared instances in clusters.
+    
+    Parameters:
+    - true_labels: array-like of shape (n_samples,)
+    - predicted_labels: array-like of shape (n_samples,)
+    
+    Returns:
+    - conf_matrix: pandas DataFrame representing the confusion matrix
+    - correlation_matrix: pandas DataFrame representing the correlation-like matrix
+    """
+    
+    # Compute the confusion matrix
+    conf_matrix = confusion_matrix(true_labels, predicted_labels)
+    conf_df = pd.DataFrame(conf_matrix, 
+                           index=np.unique(true_labels), 
+                           columns=np.unique(predicted_labels))
+    
+    print("Confusion Matrix:")
+    print(conf_df)
+    
+    # Initialize a dictionary to hold co-occurrence counts
+    co_occurrence = {}
+    true_classes = np.unique(true_labels)
+    
+    # Initialize the co-occurrence matrix
+    co_matrix = pd.DataFrame(0, index=true_classes, columns=true_classes)
+    
+    # For each cluster, count the co-occurrences of true label pairs
+    clusters = np.unique(predicted_labels)
+    for cluster in clusters:
+        # Get indices of samples in the current cluster
+        cluster_indices = np.where(predicted_labels == cluster)[0]
+        # Get the true labels for these samples
+        cluster_true_labels = true_labels[cluster_indices]
+        # Compute the co-occurrence within this cluster
+        for i in true_classes:
+            for j in true_classes:
+                count_i = np.sum(cluster_true_labels == i)
+                count_j = np.sum(cluster_true_labels == j)
+                co_matrix.loc[i, j] += count_i * count_j
+    
+    print("\nCorrelation-like Matrix:")
+    print(co_matrix)
+
+    # Plot Correlation-like Matrix Heatmap
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(co_matrix, annot=True,  cmap='YlGnBu')
+    plt.title('Correlation-like Matrix')
+    plt.xlabel('True Label')
+    plt.ylabel('True Label')
+    plt.show()
+    
+    return conf_df, co_matrix
+
+
+def compute_correlation_max_sum(true_labels, predicted_labels, visualize=True):
+    """
+    Compute the confusion matrix and a correlation-like matrix based on the maximum sum of pairs of classes across clusters.
+    Optionally visualize the matrices using heatmaps.
+    
+    Parameters:
+    - true_labels: array-like of shape (n_samples,)
+    - predicted_labels: array-like of shape (n_samples,)
+    - visualize: bool, default=True. If True, plots the confusion and correlation matrices.
+    
+    Returns:
+    - conf_matrix: pandas DataFrame representing the confusion matrix
+    - correlation_matrix: pandas DataFrame representing the correlation-like matrix based on max sums
+    """
+    
+    # Compute the confusion matrix
+    conf_matrix = confusion_matrix(true_labels, predicted_labels)
+    # Normalize the confusion matrix
+    conf_matrix_normalized = conf_matrix.astype('float') / conf_matrix.sum(axis=1)[:, np.newaxis]
+    unique_true = np.unique(true_labels)
+    unique_pred = np.unique(predicted_labels)
+    conf_df = pd.DataFrame(conf_matrix_normalized, 
+                           index=unique_true, 
+                           columns=unique_pred)
+    
+    print("Confusion Matrix:")
+    print(conf_df)
+    
+    if visualize:
+        # Plot Confusion Matrix Heatmap
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(conf_df, annot=True, cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.xlabel('Predicted Cluster')
+        plt.ylabel('True Label')
+        plt.tight_layout()
+        plt.show()
+    
+    # Initialize the correlation-like matrix
+    correlation_matrix = pd.DataFrame(0, index=unique_true, columns=unique_true)
+    
+    # For each pair of true classes, find the maximum sum across all clusters
+    for i in unique_true:
+        for j in unique_true:
+            max_sum = 0
+            for cluster in unique_pred:
+                count_i = conf_df.at[i, cluster]
+                count_j = conf_df.at[j, cluster]
+                current_sum = count_i + count_j
+                if current_sum > max_sum:
+                    max_sum = current_sum
+            correlation_matrix.at[i, j] = max_sum
+    
+    print("\nCorrelation-like Matrix (Max Sum):")
+    print(correlation_matrix)
+    
+    if visualize:
+        # Plot Correlation-like Matrix Heatmap
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(correlation_matrix, annot=True,  cmap='YlGnBu')
+        plt.title('Correlation-like Matrix (Max Sum)')
+        plt.xlabel('True Label')
+        plt.ylabel('True Label')
+        plt.tight_layout()
+        plt.show()
+    
+    return conf_df, correlation_matrix
+
+
+def compute_ami_correlation_matrix(true_labels, visualize=True):
+    """
+    Compute a correlation-like matrix between true labels using Adjusted Mutual Information (AMI).
+    
+    Parameters:
+    - true_labels: array-like of shape (n_samples,)
+    - visualize: bool, default=True. If True, plots the correlation matrix heatmap.
+    
+    Returns:
+    - ami_matrix: pandas DataFrame representing the AMI-based correlation matrix
+    """
+    
+    # Identify unique true labels
+    unique_labels = np.unique(true_labels)
+    n_labels = len(unique_labels)
+    
+    # Create a binary matrix where each column represents a true label
+    # and each row represents a sample. Entry is 1 if the sample has the label, else 0.
+    binary_matrix = pd.DataFrame(0, index=np.arange(len(true_labels)), columns=unique_labels)
+    for label in unique_labels:
+        binary_matrix[label] = (true_labels == label).astype(int)
+    
+    # Initialize the AMI correlation matrix
+    ami_matrix = pd.DataFrame(np.zeros((n_labels, n_labels)), 
+                               index=unique_labels, 
+                               columns=unique_labels)
+    
+    # Compute AMI for each pair of labels
+    for i in unique_labels:
+        for j in unique_labels:
+            if i <= j:  # Compute only for upper triangle and diagonal
+                if i == j:
+                    ami = 1.0  # AMI of a label with itself is 1
+                else:
+                    ami = adjusted_mutual_info_score(binary_matrix[i], binary_matrix[j])
+                ami_matrix.at[i, j] = ami
+                ami_matrix.at[j, i] = ami  # Symmetric matrix
+    
+    print("AMI Correlation Matrix:")
+    print(ami_matrix)
+    
+    if visualize:
+        # Plot the AMI Correlation Matrix Heatmap
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(ami_matrix, annot=True, fmt=".2f", cmap='YlGnBu', 
+                    linewidths=.5, square=True, cbar_kws={"shrink": .5})
+        plt.title('AMI-Based Correlation Matrix Between True Labels')
+        plt.xlabel('True Labels')
+        plt.ylabel('True Labels')
+        plt.tight_layout()
+        plt.show()
+    
+    return ami_matrix
+
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.datasets import make_classification
+def compute_cor(y_test, y_pred):
+    # Create confusion matrix
+    conf_matrix = confusion_matrix(y_test, y_pred)
+
+    # Create a co-occurrence matrix based on true classes
+    co_occurrence_matrix = np.zeros((9, 9))
+
+    # Fill in the co-occurrence matrix
+    for i in range(len(y_test)):
+        co_occurrence_matrix[y_test[i], y_pred[i]] += 1
+
+    # Normalize the co-occurrence matrix by row
+    co_occurrence_matrix_normalized = co_occurrence_matrix / co_occurrence_matrix.sum(axis=1, keepdims=True)
+
+    # Plot correlation heatmap of the co-occurrence matrix
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(co_occurrence_matrix_normalized, annot=True, cmap="coolwarm", fmt='.2f', square=True)
+    plt.title("True Class Correlation Heatmap")
+    plt.xlabel("True Class")  # Change x-axis label to 'True Class'
+    plt.ylabel("True Class")  # Change y-axis label to 'True Class'
+    plt.show()
+
+def compute_overlap_normalized_cf(y_test, y_pred):
+    """
+    Computes the normalized confusion matrix, maps true labels to predicted clusters,
+    and detects overlaps where multiple true labels are mapped to the same cluster.
+
+    Parameters:
+    - y_test: array-like of shape (n_samples,)
+        True labels.
+    - y_pred: array-like of shape (n_samples,)
+        Predicted labels (clusters).
+
+    Returns:
+    - result: dict
+        A dictionary containing:
+        - 'confusion_matrix': The raw confusion matrix.
+        - 'normalized_confusion_matrix': The confusion matrix normalized by true label counts.
+        - 'label_to_cluster_mapping': Mapping from true labels to predicted clusters.
+        - 'overlaps': Clusters that have multiple true labels mapped to them.
+    """
+    
+    # Step 1: Compute the confusion matrix
+    cf = confusion_matrix(y_test, y_pred)
+    
+    # Step 2: Normalize the confusion matrix by the sum of each row (true labels)
+    normalized_cf = cf.astype('float') / cf.sum(axis=1, keepdims=True)
+    
+
+
+    # Step 3: Map each true label to the predicted cluster with the highest count
+    # This corresponds to taking the argmax of each row in the confusion matrix
+    label_to_cluster_mapping = np.argmax(cf, axis=1)
+    
+    # Optional: If you have label names, you can map indices back to label names
+    # For simplicity, assuming labels are integers starting from 0
+    
+    # Step 4: Detect overlaps where multiple true labels are mapped to the same cluster
+    cluster_to_labels = defaultdict(list)
+    for true_label, pred_cluster in enumerate(label_to_cluster_mapping):
+        cluster_to_labels[pred_cluster].append(true_label)
+    conf_matrix = normalized_cf
+    print("Starting visualization")
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
+    plt.xlabel('Cluster Labels')
+    plt.ylabel('True Labels')
+    plt.title('Confusion Matrix: True Labels vs Cluster Labels')
+    plt.show()
+    print("Visualization completed")
+    
+    # Identify clusters that have more than one true label mapped to them
+    overlaps = {cluster: labels for cluster, labels in cluster_to_labels.items() if len(labels) > 1}
+    
+    # Prepare the result
+    result = {
+        'confusion_matrix': cf,
+        'normalized_confusion_matrix': normalized_cf,
+        'label_to_cluster_mapping': label_to_cluster_mapping,
+        'overlaps': overlaps
+    }
+    print(result)
+    return result

@@ -825,6 +825,83 @@ def xiiotid_noniid_dirichlet(dataset, y_train, n_parties, partition):
     return net_dataidx_map
 
 
+
+
+def xiiotid_noniid_dirichlet3(args, dataset, num_users, alpha, min_require_size=100):
+    """
+    Splits dataset indices for non-IID distribution using Dirichlet allocation.
+    If a class has fewer instances than min_require_size, assign all its instances to one client.
+
+    Args:
+        args: Arguments containing necessary parameters like num_classes and seed.
+        dataset: The dataset to split.
+        num_users: Number of clients/users.
+        alpha: Dirichlet distribution parameter.
+        min_require_size: Minimum number of instances per client.
+
+    Returns:
+        net_dataidx_map: A dictionary mapping each client to its data indices.
+        classes_list: A list containing the unique classes assigned to each client.
+    """
+    min_size = 0
+    K = args.num_classes
+    print("-----------------------------in xiiotid_noniid_dirichlet2-----------------------------")
+    print("--alpha:", alpha)
+    num_instances = len(dataset)
+    num_classes = len(np.unique(dataset.targets))  # e.g., 10
+    N = num_instances
+
+    # Set random seed for reproducibility
+    np.random.seed(args.seed)
+
+    net_dataidx_map = {i: [] for i in range(num_users)}
+    n_parties = num_users
+
+    # Iterate until all clients have at least min_require_size samples
+    while min_size < min_require_size:
+        idx_batch = [[] for _ in range(n_parties)]
+        for k in range(K):
+            idx_k = np.where(np.array(dataset.targets) == k)[0]
+            np.random.shuffle(idx_k)
+            if len(idx_k) < min_require_size:
+                # Assign all instances of this class to the client with the least data
+                client_id = np.argmin([len(batch) for batch in idx_batch])
+                idx_batch[client_id].extend(idx_k.tolist())
+            else:
+                # Use Dirichlet distribution to allocate data among clients
+                proportions = np.random.dirichlet(np.repeat(alpha, n_parties))
+                # Balance proportions to ensure no client exceeds N / n_parties
+                proportions = np.array([p * (len(idx_j) < N / n_parties) for p, idx_j in zip(proportions, idx_batch)])
+                proportions = proportions / proportions.sum()
+                # Compute the split indices
+                proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
+                # Split the indices and assign to each client
+                split_idx = np.split(idx_k, proportions)
+                idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, split_idx)]
+            # Update the minimum size across all clients
+            min_size = min([len(idx_j) for idx_j in idx_batch])
+        
+        # Check if the current allocation meets the minimum size requirement
+        if min_size < min_require_size:
+            print(f"Minimum size {min_size} is less than required {min_require_size}. Retrying...")
+    
+    # Shuffle and assign the indices to each client
+    for j in range(n_parties):
+        np.random.shuffle(idx_batch[j])
+        net_dataidx_map[j] = idx_batch[j]
+    
+    print("Assigned clients:", net_dataidx_map.keys())
+
+    # Create a list of unique classes for each client
+    classes_list = []
+    for i in range(num_users):
+        classes = np.unique(np.array(dataset.targets)[net_dataidx_map[i]])
+        classes_list.append(classes)
+    
+    print("Classes assigned to each client:", classes_list)
+    return net_dataidx_map, classes_list
+
+
 def xiiotid_noniid_dirichlet2(args, dataset, num_users, alpha):
     min_size = 0
     min_require_size = 10
