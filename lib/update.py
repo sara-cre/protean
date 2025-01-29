@@ -716,7 +716,7 @@ class LocalUpdate(object):
 
     def update_weights_het_prox_weighted(self, args, idx, global_protos, model, global_round=round):
         # Set mode to train model
-        torch.manual_seed(args.seed)
+        #torch.manual_seed(args.seed)
         global_model = copy.deepcopy(model)
         model.train()
         epoch_loss = {'total': [], '1': [], '2': [], '3': []}
@@ -741,7 +741,9 @@ class LocalUpdate(object):
         class_weights = class_weights / class_weights.sum() * num_classes  # Normalize weights
 
         # Use class weights in CrossEntropyLoss
-        self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+        if args.weighted_loss:
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(self.device))
+        
 
         # Set optimizer for the local updates
         if self.args.optimizer == 'sgd':

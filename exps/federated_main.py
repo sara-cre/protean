@@ -1607,6 +1607,7 @@ if __name__ == '__main__':
         args.num_features = 34
         args.num_classes = 7
         args.weighted_loss = True
+        #args.criterion =
     elif args.dataset == 'cicids2017':
         args.num_features = 81#77#81
         args.num_classes = 25#11#25
@@ -1794,11 +1795,12 @@ if __name__ == '__main__':
                 for attackers in [2,6]:
                     args.num_attackers = attackers"""
         #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['fedproto']:#'beforefl','fedproto','fedprox','fedavg']:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+        for alg in ['beforefl','fedproto','fedprox','fedavg']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
             args.alg = alg
             classic_eval = True
+            args.attack_type = 'none'
             #args.proto_robust = True
-            args.attack_type = 'label-flipping'
+            """args.attack_type = 'label-flipping'
             for attack_perc in [0.1, 0.2,0.3,0.4,0.5]:#,0.5,0.75]:
                 args.flip_ratio = attack_perc
                 print('*****************************flip ratio********************************: ', args.flip_ratio)
@@ -1814,73 +1816,73 @@ if __name__ == '__main__':
                     
                     args.eliminate_outlier = True
                     for outlier_type in [ 'intra', 'inter_distance', 'inter_forest','multi_krum']: #'intra', 'inter_distance', 'inter_forest', 
-                        args.outlier_type = outlier_type
+                        args.outlier_type = outlier_type"""
 
 
-                        print('*****************************Running algorithm********************************: ', args.alg)
-                        if args.alg == 'fedavg' or args.alg == 'fedprox':
-                            print('Running federated averaging')
-                            if args.dataset == 'cicids2017':
-                                global_model = DenseModel(args)
-                            elif args.dataset == 'edgeiiot':
-                                global_model = EdgeCustomCNN(args)
-                            else:
-                                global_model = CustomCNN(args)
-                            Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        elif args.alg == 'fedproto':
-                            aggregated = 'all_layers' #'none'#'mapping_layers' #
-                            if args.dataset == 'cicids2017':
-                                local_model_list = [DenseModel(args) for i in range(args.num_users)]
-                            elif args.dataset == 'edgeiiot':
-                                local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
-                            else:
-                                local_model_list = [CustomCNN(args) for i in range(args.num_users)]
-                            FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
-                        elif args.alg == 'fedpcl':
-                            backbone = Embedder(args)
-                            local_model_list = [Proj(args=args) for i in range(args.num_users)]
-                            acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
-                            acc_mean = acc_mtx.mean().item()
-                            acc_std = acc_mtx.std().item()
-                            print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
+            print('*****************************Running algorithm********************************: ', args.alg)
+            if args.alg == 'fedavg' or args.alg == 'fedprox':
+                print('Running federated averaging')
+                if args.dataset == 'cicids2017':
+                    global_model = DenseModel(args)
+                elif args.dataset == 'edgeiiot':
+                    global_model = EdgeCustomCNN(args)
+                else:
+                    global_model = CustomCNN(args)
+                Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+            elif args.alg == 'fedproto':
+                aggregated = 'all_layers' #'none'#'mapping_layers' #
+                if args.dataset == 'cicids2017':
+                    local_model_list = [DenseModel(args) for i in range(args.num_users)]
+                elif args.dataset == 'edgeiiot':
+                    local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+                else:
+                    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+            elif args.alg == 'fedpcl':
+                backbone = Embedder(args)
+                local_model_list = [Proj(args=args) for i in range(args.num_users)]
+                acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+                acc_mean = acc_mtx.mean().item()
+                acc_std = acc_mtx.std().item()
+                print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
 
-                        elif args.alg == 'fedopt':
-                            print('Not implemented yet')
-                        elif args.alg == 'beforefl':
-                            acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
-                        else:
-                            if args.dataset == 'cicids2017':
-                                global_model = DenseModel(args)
-                            elif args.dataset == 'edgeiiot':
-                                global_model = EdgeCustomCNN(args)
-                            else:
-                                global_model = CustomCNN(args)
-                            Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        
-                        #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-                        if args.alg != 'beforefl':
-                            if args.attack_type == 'none':
-                                file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
-                            else:
-                                file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
-                            file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                            file_name_before_fl = file_folder_before + file_ext + '.txt'
-                            if args.attack_type == 'none':
-                                file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
-                            else:
-                                file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
-                            #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                            print('file_ext_after: ', file_ext_after)
-                            file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
-                            #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                            #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                            #output_file_name = file_folder + file_ext + '.pdf'
+            elif args.alg == 'fedopt':
+                print('Not implemented yet')
+            elif args.alg == 'beforefl':
+                acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+            else:
+                if args.dataset == 'cicids2017':
+                    global_model = DenseModel(args)
+                elif args.dataset == 'edgeiiot':
+                    global_model = EdgeCustomCNN(args)
+                else:
+                    global_model = CustomCNN(args)
+                Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+            
+            #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+            if args.alg != 'beforefl':
+                if args.attack_type == 'none':
+                    file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+                else:
+                    file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+                file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                file_name_before_fl = file_folder_before + file_ext + '.txt'
+                if args.attack_type == 'none':
+                    file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
+                else:
+                    file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
+                #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                print('file_ext_after: ', file_ext_after)
+                file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+                #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                #output_file_name = file_folder + file_ext + '.pdf'
 
-                            plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
-                            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                            file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
-                            #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
-                            if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
-                            
-                                plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)
+                plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
+                file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
+                #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
+                if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
+                
+                    plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)
