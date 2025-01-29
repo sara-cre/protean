@@ -829,7 +829,39 @@ def aggregate_mapping_layers(local_weights):
     
     return updated_weights_list
 
+def apply_dp_to_protos(args, protos):
+        """
+        Applies Differential Privacy to the prototypes by clipping and adding Gaussian noise.
 
+        Args:
+            protos (dict): Dictionary of class prototypes.
+            args: Argument parser with DP parameters.
+
+        Returns:
+            dict: Noisy prototypes.
+        """
+        print('Applying Differential Privacy to Prototypes...')
+        dp_protos = {}
+        epsilon = args.epsilon
+        delta = args.delta
+        clip_threshold = args.clip_threshold
+
+        # Calculate noise scale (sigma) for Gaussian Mechanism
+        sigma = (clip_threshold * math.sqrt(2 * math.log(1.25 / delta))) / epsilon
+
+        for cls, proto in protos.items():
+            # Clip the prototype to bound sensitivity
+            proto_norm = torch.norm(proto, p=2)
+            if proto_norm > clip_threshold:
+                proto = proto * (clip_threshold / proto_norm)
+
+            # Add Gaussian noise
+            noise = torch.normal(0, sigma, size=proto.shape).to(args.device)
+            noisy_proto = proto + noise
+
+            dp_protos[cls] = noisy_proto
+
+        return dp_protos
 
 def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none', classes_distribution=None):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
@@ -908,6 +940,8 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             w, loss, acc, protos = local_model.update_weights_het_prox_weighted(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
 
             agg_protos = agg_func(protos)
+            if args.diff_privacy:
+                agg_protos = apply_dp_to_protos(args, agg_protos)
             local_model_list[idx].load_state_dict(copy.deepcopy(w))
 
 
