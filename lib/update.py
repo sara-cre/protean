@@ -19,6 +19,30 @@ from torch.nn import functional as F
 #from opacus import PrivacyEngine
 #from opacus.accountants import RDPAccountant
 
+def compute_loss(model, dataloader, device="cpu"):
+    was_training = False
+    if model.training:
+        model.eval()
+        was_training = True
+    if device == 'cpu':
+        criterion = nn.CrossEntropyLoss()
+    elif "cuda" in device.type:
+        criterion = nn.CrossEntropyLoss().cuda()
+    loss_collector = []
+    with torch.no_grad():
+        for batch_idx, (x, target) in enumerate(dataloader):
+            if device != 'cpu':
+                x, target = x.cuda(), target.to(dtype=torch.int64).cuda()
+            _,_,out = model(x)
+            loss = criterion(out, target)
+            loss_collector.append(loss.item())
+
+        avg_loss = sum(loss_collector) / len(loss_collector)
+
+    if was_training:
+        model.train()
+
+    return avg_loss
 
 def contrastive_loss(proto1, proto2, label, margin=1.0):
     """
@@ -618,6 +642,91 @@ class LocalUpdate(object):
         epoch_loss['total'] = sum(epoch_loss['total']) / len(epoch_loss['total'])
         epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
         epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
+
+        return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
+
+    def update_weights_moon(self, args, idx, global_protos, model, global_round=round):
+        # Set mode to train model
+        mu = 1.0
+        global_model = copy.deepcopy(model)
+        model.train()
+        epoch_loss = {'total':[],'1':[], '2':[], '3':[]}
+
+        # Set optimizer for the local updates
+        if self.args.optimizer == 'sgd':
+            optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr,
+                                        momentum=0.5)
+        elif self.args.optimizer == 'adam':
+            optimizer = torch.optim.Adam(model.parameters(), lr=self.args.lr,
+                                         weight_decay=1e-4)
+        print(f"Trainloader length: {len(self.trainloader)}")
+        for iter in range(self.args.train_ep):
+            batch_loss = {'total':[],'1':[], '2':[], '3':[]}
+            agg_protos_label = {}
+
+            for batch_idx, (images, label_g) in enumerate(self.trainloader):
+                images, labels = images.to(self.device), label_g.to(self.device)
+                # Print shapes to debug
+                #print(f"Batch {batch_idx} - images shape: {images.shape}")
+                #print(f"Batch {batch_idx} - labels shape: {labels.shape}")
+                # loss1: cross-entrophy loss, loss2: proto distance loss
+                model.zero_grad()
+                images.requires_grad = False
+                labels.requires_grad = False
+                log_probs, protos = model(images)
+                log_probs_g, protos_g = global_model(images)
+                posi = cos(protos, protos_g)    
+                logits = posi.reshape(-1,1)
+                for net in previous_models:
+                    log_probs_net, protos_net = net(images)
+                    nega = cos(protos, protos_net)
+                    logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)
+                logits /= temperature
+                x = torch.zeros(images.size(0)).cuda().long()
+                loss2 = mu * self.criterion(logits, x)
+                loss1 = self.criterion(log_probs, labels)
+                loss = loss1 + loss2 
+
+                # Debug prints
+                """print(f"Batch Index: {batch_idx}, Iteration: {iter}")
+                print(f"loss1: {loss1.item()}, loss2: {loss2.item()}, combined loss: {loss.item()}")
+                print(f"labels: {labels}, log_probs: {log_probs}, protos: {protos}")"""
+                #print(f"proto_new: {proto_new}, global_protos: {global_protos}")
+
+                loss.backward()
+                optimizer.step()
+
+                for i in range(len(labels)):
+                    if label_g[i].item() in agg_protos_label:
+                        agg_protos_label[label_g[i].item()].append(protos[i,:])
+                    else:
+                        agg_protos_label[label_g[i].item()] = [protos[i,:]]
+
+                log_probs = log_probs[:, 0:args.num_classes]
+                _, y_hat = log_probs.max(1)
+                acc_val = torch.eq(y_hat, labels.squeeze()).float().mean()
+
+                if self.args.verbose and (batch_idx % 10 == 0):
+                    """print('| Global Round : {} | User: {} | Local Epoch : {} | [{}/{} ({:.0f}%)]\tLoss: {:.3f} | Acc: {:.3f}'.format(
+                        global_round, idx, iter, batch_idx * len(images),
+                        len(self.trainloader.dataset),
+                        100. * batch_idx / len(self.trainloader),
+                        loss.item(),
+                        acc_val.item()))"""
+                    print(f"| Global Round: {global_round} | User: {idx} | Epoch: {iter} | [{batch_idx * len(images)}/{len(self.trainloader.dataset)} ({100. * batch_idx / len(self.trainloader):.0f}%)] "
+                        f"| Loss1: {loss1.item():.3f} | Loss2: {loss2.item():.3f} | LossProx: {loss_prox.item():.3f} | Combined: {loss.item():.3f} | Acc: {acc_val.item():.3f}")
+
+                batch_loss['total'].append(loss.item())
+                batch_loss['1'].append(loss1.item())
+                batch_loss['2'].append(loss2.item())
+            epoch_loss['total'].append(sum(batch_loss['total'])/len(batch_loss['total']))
+            epoch_loss['1'].append(sum(batch_loss['1']) / len(batch_loss['1']))
+            epoch_loss['2'].append(sum(batch_loss['2']) / len(batch_loss['2']))
+
+        epoch_loss['total'] = sum(epoch_loss['total']) / len(epoch_loss['total'])
+        epoch_loss['1'] = sum(epoch_loss['1']) / len(epoch_loss['1'])
+        epoch_loss['2'] = sum(epoch_loss['2']) / len(epoch_loss['2'])
+
 
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 
