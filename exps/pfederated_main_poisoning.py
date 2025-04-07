@@ -1,1979 +1,1875 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# Python version: 3.6
+
+#https://github.com/mnsalim/IoT-Related-Dataset-and-Resources
+#iotid20
+import copy, sys
+import time
 import numpy as np
+from tqdm import tqdm
 import torch
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
-from sklearn.neighbors import NearestNeighbors
-from sklearn.cluster import KMeans
-from collections import defaultdict
-from torch.utils.data import Dataset, DataLoader
-
-
-
-def label_flipping_untargeted(y, flip_ratio=0.5):
-    """Apply label flipping attack to randomly change labels of traffic samples."""
-    print('y type:', type(y))
-    num_samples = len(y)
-    num_flips = int(num_samples * flip_ratio)
-    
-    # Generate random indices based on the length of the series
-    flip_indices = np.random.choice(num_samples, num_flips, replace=False)
-    print("Generated flip_indices:", flip_indices)
-    
-    y_flipped = y.copy()  # Ensure y_flipped is a Series, not an ndarray
-    
-    for idx in flip_indices:
-        # Use iloc to access by position instead of index
-        new_label = np.random.choice(np.setdiff1d(np.unique(y), y.iloc[idx]))
-        y_flipped.iloc[idx] = new_label
-    
-    return y_flipped
-
-
-import torch
-import numpy as np
-import pandas as pd
-
-def flip_labels(args, y, flip_fraction=0.1):
-    num_classes = args.num_classes
-    num_samples = len(y)
-    num_flips = int(flip_fraction * num_samples)
-    
-    # Select random indices to flip using PyTorch
-    indices_to_flip = torch.randperm(num_samples)[:num_flips]
-    
-    # Convert the PyTorch tensor to a NumPy array or list for Pandas indexing
-    indices_to_flip = indices_to_flip.numpy()
-    
-    # Get the current labels for these indices using .iloc for positional indexing
-    current_labels = y.iloc[indices_to_flip]
-    
-    # Ensure current labels are numeric
-    if current_labels.dtype == object:  # This checks if the data type is 'object', which usually indicates mixed types
-        # Try converting to numeric, coerce errors to NaN, which we can handle separately if needed
-        current_labels = pd.to_numeric(current_labels, errors='coerce')
-    
-    # Create a mask for choosing a new label
-    new_labels = torch.randint(0, num_classes, (num_flips,))
-    
-    # Ensure new labels are different from the current labels, handle NaNs if any
-    if current_labels.isna().any():
-        print("Warning: Some labels could not be converted to numeric and will not be flipped.")
-        new_labels = np.where(current_labels.notna(), (current_labels + 1 + new_labels.numpy()) % num_classes, current_labels)
-    else:
-        new_labels = (current_labels + 1 + new_labels.numpy()) % num_classes
-    
-    # Assign the new labels back to the original Series
-    y.iloc[indices_to_flip] = new_labels
-
-    return y
-
-def label_flipping_(dataset, idxs, ratio=0.1):
-    """Apply label flipping attack to randomly change labels of traffic samples."""
-    print("inside label_flipping")
-    print("num_samples:", len(idxs))
-    print("ratio:", ratio)
-    num_samples = len(idxs)
-    num_flips = int(num_samples * ratio)
-    print("num_flips:", num_flips)
-    
-    # Generate random indices based on the length of the series
-    flip_indices = np.random.choice(idxs, num_flips, replace=False)
-    #print("Generated flip_indices:", flip_indices)
-    
-    y_flipped = dataset.targets.copy()  # Ensure y_flipped is a Series, not an ndarray
-    
-    for idx in flip_indices:    
-        # Use iloc to access by position instead of index
-        #print("dataset.labels[idx]:", dataset.labels[idx])
-        new_label = np.random.choice(np.setdiff1d(np.unique(dataset.targets), dataset.targets[idx]))
-        #print("new_label:", new_label)
-        y_flipped[idx] = new_label
-    dataset.targets = y_flipped
-    return dataset
-
-import numpy as np
-
-def label_flipping(dataset, idxs, ratio=0.1):
-    """Apply label flipping attack to randomly change labels of traffic samples."""
-    
-    num_flips = int(len(idxs) * ratio)
-    np.random.seed(1234)
-
-    # Generate random indices to flip
-    flip_indices = np.random.choice(idxs, num_flips, replace=False)
-    
-    # Convert targets to a NumPy array for efficient processing
-    targets = np.array(dataset.targets)
-    unique_labels = np.unique(targets)
-
-    # Get the current labels of the selected indices
-    current_labels = targets[flip_indices]
-    
-    # Generate new labels for the selected indices
-    new_labels = np.array([
-        np.random.choice(unique_labels[unique_labels != label])
-        for label in current_labels
-    ])
-    
-    # Assign the new labels to the selected indices
-    targets[flip_indices] = new_labels
-
-    # Update the dataset's targets
-    dataset.targets = targets.tolist()
-    
-    return dataset
-import numpy as np
-
-def label_flipping_majorityclass(args, dataset, idxs, ratio=0.1, random_target=False):
-    # Convert targets to a NumPy array for efficient processing
-    print("inside label_flipping_majorityclass")
-    print("flipping ratio:", ratio)
-    print(type(dataset))
-    print(type(dataset.targets))
-    targets = np.array(dataset.targets)
-    
-    # Assuming get_majority_and_target_classes is defined elsewhere
-    majority_class, target_class = get_majority_and_target_classes(args, dataset, idxs)
-    print("majority_class:", majority_class)
-    
-    # Find the global indices where the target is the majority class
-    idxs_subset = np.array(idxs)  # Ensure idxs is a NumPy array
-    idxs_majority = idxs_subset[targets[idxs_subset] == majority_class]
-    
-    num_flips = int(len(idxs_majority) * ratio)
-    np.random.seed(1234)
-    
-    # Generate random global indices to flip
-    flip_indices = np.random.choice(idxs_majority, num_flips, replace=False)
-    print("len of flip indices", len(flip_indices))
-    
-    unique_labels = np.unique(targets)
-    
-    # Generate new labels for the selected indices
-    if random_target:
-        # Assign a random label (excluding the majority class) to each selected index
-        new_labels = np.random.choice(unique_labels[unique_labels != majority_class], size=num_flips)
-    else:
-        # Assign the target_class to each selected index
-        new_labels = np.full(num_flips, target_class)
-    
-    # Assign the new labels to the selected global indices
-    #dataset.targets[flip_indices] = new_labels
-    print("targets after flipping:", targets)
-    print("num of class after flipping:", np.bincount(targets[idxs_subset]))
-    
-    # Update the dataset's targets
-    #dataset.targets = targets.tolist()
-    
-    return flip_indices, new_labels
-
-def get_majority_and_target_classes(args,dataset, idxs):
-    targets = np.array(dataset.targets)
-    
-    class_counts = np.bincount(targets[idxs])  # Use NumPy array indexing here
-    majority_class = np.argmax(class_counts)
-    mislabel_mapping_old = {
-            0: 3,  # C&C → Lateral_movement
-            1: 2,  # Exfiltration → Exploitation
-            2: 8,  # Exploitation → Weaponization
-            3: 6,  # Lateral_movement → Reconnaissance
-            4: 6,  # Normal → Reconnaissance
-            5: 6,  # RDOS → Reconnaissance
-            6: 4,  # Reconnaissance → Normal
-            7: 2,  # Tampering → Exploitation
-            8: 2   # Weaponization → Exploitation
-        }
-
-    mislabel_mapping_new = {
-        0: 4,  # C&C → Normal
-        1: 8,  # Exfiltration → Weaponization
-        2: 6,  # Exploitation → Reconnaissance
-        3: 7,  # Lateral_movement → Tampering
-        4: 8,  # Normal → Weaponization
-        5: 5,  # RDOS → RDOS
-        6: 0,  # Reconnaissance → C&C
-        7: 7,  # Tampering → Tampering
-        8: 1   # Weaponization → Exfiltration
-    }
-    if args.dataset == 'xiiotid':
-        mislabel_mapping = {
-            0: 1,  #C&C → Exfiltration
-            1: 8, #Exfiltration → Weaponization
-            2: 6, #Exploitation → Reconnaissance
-            3: 7, #Lateral_movement → Tampering
-            4: 0, #Normal → 0 C&C
-            5: 0, #RDOS → C&C
-            6: 2, #Reconnaissance → Exploitation
-            7: 3, #Tampering → Lateral_movement
-            8: 1  #Weaponization → 1 Exfiltration
-        }
-    elif args.dataset == '5gnidd':
-        mislabel_mapping = {
-            0:4, #Bengin -> SlowrateDoS
-            1:2, #HttpFlood -> SYNFlood
-            2:5, #SYNFlood -> TCPConnectScan
-            3:6, #SYNScan -> UDPScan
-            4:6, #SlowrateDoS -> UDPScan
-            5:2, #TCPConnectScan -> SYNFlood
-            6:3 #UDPScan -> SYNScan
-        }
-    """Class: Benign, Encoded: 0
-    Class: HTTPFlood, Encoded: 1
-    Class: SYNFlood, Encoded: 2
-    Class: SYNScan, Encoded: 3
-    Class: SlowrateDoS, Encoded: 4
-    Class: TCPConnectScan, Encoded: 5
-    Class: UDPScan, Encoded: 6"""
-    
-    target_class = mislabel_mapping[majority_class]
-    return majority_class, target_class
-
-
-def determine_attacker_outlier_status(args,outliers_per_class, attacker_idx, dataset, idxs):
-    """
-    Determines if a specific attacker is detected as an outlier in either the majority class or the target class.
-    
-    Args:
-        outliers_per_class (dict): Output from `class_wise_outlier_detection` mapping class labels to outliers.
-        attacker_idx (int or str): The client index of the attacker.
-        target_class (int): The class label of the target class.
-        majority_class (int): The class label of the majority class.
-    
-    Returns:
-        dict: Dictionary indicating outlier status in majority and/or target class.
-              Example:
-              {
-                  'outlier_in_majority_class': True,
-                  'outlier_in_target_class': False
-              }
-    """
-    majority_class, target_class = get_majority_and_target_classes(args,dataset, idxs)
-    outlier_status = {
-        'outlier_in_majority_class': False,
-        'outlier_in_target_class': False
-    }
-    
-    # Check outlier status in majority class
-    if majority_class in outliers_per_class:
-        outlier_status['outlier_in_majority_class'] = attacker_idx in outliers_per_class[majority_class]
-    
-    # Check outlier status in target class
-    if target_class in outliers_per_class:
-        outlier_status['outlier_in_target_class'] = attacker_idx in outliers_per_class[target_class]
-    
-    return outlier_status
-
-
-
-def class_wise_outlier_detection(local_protos, num_classes, contamination=0.1):
-    """
-    Performs class-wise outlier detection on local prototypes.
-    
-    Args:
-        local_protos (dict): Dictionary mapping client indices to their class prototypes.
-                             Structure: {client_idx: {label: prototype_tensor}}
-        num_classes (int): Total number of classes.
-        contamination (float): The proportion of outliers in the data set.
-    
-    Returns:
-        dict: Mapping from class label to list of client indices identified as outliers.
-    """
-    outliers_per_class = {label: [] for label in range(num_classes)}
-    
-    for label in range(num_classes):
-        # Collect all prototypes for this class
-        prototypes = []
-        client_indices = []
-        for client_idx, protos in local_protos.items():
-            if label in protos:
-                prototypes.append(protos[label].detach().cpu().numpy())
-                client_indices.append(client_idx)
-        
-        if len(prototypes) < 2:
-            continue  # Not enough prototypes to perform outlier detection
-        
-        # Standardize the data
-        scaler = StandardScaler()
-        prototypes_scaled = prototypes#scaler.fit_transform(prototypes)
-        
-        # Apply Isolation Forest
-        clf = IsolationForest(contamination=contamination, random_state=1234)
-        preds = clf.fit_predict(prototypes_scaled)
-        
-        # Outliers are labeled as -1
-        for idx, pred in enumerate(preds):
-            if pred == -1:
-                outliers_per_class[label].append(client_indices[idx])
-
-    for label, clients in outliers_per_class.items():
-        print(f"Class {label}: {(clients)} outliers  detected")
-    
-    return outliers_per_class
-
-
-
-def class_wise_outlier_detection_knn(local_protos, num_classes, contamination=0.1, k=5):
-    """
-    Performs class-wise outlier detection on local prototypes using k-NN Distance.
-    
-    Args:
-        local_protos (dict): Dictionary mapping client indices to their class prototypes.
-                             Structure: {client_idx: {label: prototype_tensor}}
-        num_classes (int): Total number of classes.
-        contamination (float): The proportion of outliers in the data set.
-        k (int): Number of nearest neighbors to consider.
-    
-    Returns:
-        dict: Mapping from class label to list of client indices identified as outliers.
-    """
-    outliers_per_class = {label: [] for label in range(num_classes)}
-    
-    for label in range(num_classes):
-        # Collect all prototypes for this class
-        prototypes = []
-        client_indices = []
-        for client_idx, protos in local_protos.items():
-            if label in protos:
-                prototypes.append(protos[label].detach().cpu().numpy())
-                client_indices.append(client_idx)
-        
-        if len(prototypes) < (k + 1):
-            print(f"Class {label}: Not enough prototypes for k-NN. Required: {k + 1}, Available: {len(prototypes)}")
-            continue  # Not enough prototypes to perform k-NN
-        
-        # Standardize the data
-        scaler = StandardScaler()
-        prototypes_scaled = scaler.fit_transform(prototypes)
-        
-        # Fit k-NN
-        nbrs = NearestNeighbors(n_neighbors=k, algorithm='auto').fit(prototypes_scaled)
-        distances, indices = nbrs.kneighbors(prototypes_scaled)
-        
-        # Compute average distance to k neighbors
-        avg_distances = distances.mean(axis=1)
-        
-        # Determine threshold based on contamination
-        threshold = np.percentile(avg_distances, 100 * (1 - contamination))
-        
-        # Identify outliers
-        for idx, avg_dist in enumerate(avg_distances):
-            if avg_dist > threshold:
-                outliers_per_class[label].append(client_indices[idx])
-    
-    for label, clients in outliers_per_class.items():
-        print(f"Class {label}: {clients} outliers detected")
-    
-    return outliers_per_class
-
-
-def evaluate_outlier_detection(outliers_per_class, attacked_clients, num_clients, num_classes):
-    """
-    Evaluates the outlier detection performance.
-    
-    Args:
-        outliers_per_class (dict): Mapping from class label to list of outlier client indices.
-        attacked_clients (list): List of client indices that were attacked.
-        num_clients (int): Total number of clients.
-        num_classes (int): Total number of classes.
-    
-    Returns:
-        dict: Evaluation metrics including precision, recall, f1-score, and accuracy.
-    """
-    # Flatten outliers across all classes
-    detected_outliers = set()
-    for clients in outliers_per_class.values():
-        detected_outliers.update(clients)
-    
-    # Create binary labels
-    y_true = [1 if client in attacked_clients else 0 for client in range(num_clients)]
-    y_pred = [1 if client in detected_outliers else 0 for client in range(num_clients)]
-    
-    # Compute metrics
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    accuracy = accuracy_score(y_true, y_pred)
-    
-    metrics = {
-        'Precision': precision,
-        'Recall': recall,
-        'F1-Score': f1,
-        'Accuracy': accuracy
-    }
-    print("Outlier Detection Metrics:")
-    for metric, value in metrics.items():
-        print(f"{metric}: {value:.4f}")
-    
-    return metrics
-
-
-
-def anomaly_detection_distance(local_protos, args):
-    """
-    Detects anomalous prototypes and returns a list of trusted client indices.
-    """
-    num_clients = len(local_protos)
-    class_protos = {}  # Key: class label, Value: list of (client_idx, prototype)
-    for client_idx, protos in local_protos.items():
-        for label, proto in protos.items():
-            if label in class_protos:
-                class_protos[label].append((client_idx, proto))
-            else:
-                class_protos[label] = [(client_idx, proto)]
-    
-    # Initialize a set of trusted clients
-    trusted_clients = set(range(num_clients))
-    
-    # Parameters for anomaly detection
-    k = 2#args.anomaly_k  # Number of standard deviations for threshold
-    delta = 0.1#args.anomaly_delta  # Threshold for intra-client prototype distances
-    
-    client_anomaly_scores = {idx: 0 for idx in range(num_clients)}
-    
-    # Inter-client prototype analysis
-    for label, proto_list in class_protos.items():
-        # Compute pairwise distances
-        distances = []
-        client_indices = []
-        for i in range(len(proto_list)):
-            for j in range(i+1, len(proto_list)):
-                proto_i = proto_list[i][1]
-                proto_j = proto_list[j][1]
-                dist = F.pairwise_distance(proto_i.unsqueeze(0), proto_j.unsqueeze(0), p=2).item()
-                distances.append(dist)
-        if len(distances) == 0:
-            continue  # Not enough prototypes to compare
-        mean_dist = np.mean(distances)
-        std_dist = np.std(distances)
-        
-        # Compute average distance for each client's prototype to others
-        for client_idx, proto in proto_list:
-            dists = []
-            for other_idx, other_proto in proto_list:
-                if client_idx != other_idx:
-                    dist = F.pairwise_distance(proto.unsqueeze(0), other_proto.unsqueeze(0), p=2).item()
-                    dists.append(dist)
-            avg_dist = np.mean(dists)
-            if avg_dist > mean_dist + k * std_dist:
-                # Mark client as suspicious
-                client_anomaly_scores[client_idx] += 1
-    
-
-    
-    # Determine trusted clients based on anomaly scores
-    s_threshold = 1#args.anomaly_score_threshold
-    trusted_clients = [idx for idx, score in client_anomaly_scores.items() if score <= s_threshold]
-    
-    return trusted_clients
-
-
-
-import torch.nn.functional as F
-import numpy as np
-from typing import Dict
-
-def intra_client_analysis(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[int, int]:
-    """
-    Detects anomalies within each client's prototypes based on prototype distances.
-
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attribute:
-            - alpha (float): Scaling factor for threshold calculation.
-
-    Returns:
-    - client_anomaly_scores (dict):
-        Dictionary mapping client indices to their anomaly scores from intra-client analysis.
-    """
-    alpha = 1.0  # Default alpha to 1.0 if not provided
-    client_anomaly_scores = {}
-
-    for client_id, protos in local_protos.items():
-        class_labels = list(protos.keys())
-        num_classes = len(class_labels)
-
-        if num_classes < 2:
-            # Not enough prototypes to compare
-            client_anomaly_scores[client_id] = 0
-            continue
-
-        # Extract all prototype tensors
-        proto_tensors = [protos[label] for label in class_labels]
-
-        # Compute all pairwise distances
-        distances = []
-        for i in range(num_classes):
-            for j in range(i + 1, num_classes):
-                proto_i = proto_tensors[i].unsqueeze(0)  # Add batch dimension
-                proto_j = proto_tensors[j].unsqueeze(0)
-                dist = F.pairwise_distance(proto_i, proto_j, p=2).item()
-                distances.append(dist)
-
-        # Calculate mean and standard deviation of distances
-        mean_dist = np.mean(distances)
-        std_dist = np.std(distances)
-
-        # Define threshold
-        threshold = mean_dist - alpha * std_dist
-
-        # Check if any distance is below the threshold
-        is_anomalous = any(d < threshold for d in distances)
-
-        # Assign anomaly score (1 for anomalous, 0 otherwise)
-        client_anomaly_scores[client_id] = 1 if is_anomalous else 0
-
-    return client_anomaly_scores
-
-import torch.nn.functional as F
-import torch
-from typing import Dict, Tuple
-
-def get_min_prototype_distances(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[int, Tuple[float, Tuple[str, str]]]:
-    """
-    For each client, computes the pairwise distances between all class prototypes,
-    sorts them, and identifies the minimum distance along with the related classes.
-
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing any additional parameters (not used in this function).
-
-    Returns:
-    - min_distances (dict):
-        Dictionary mapping each client index to a tuple containing:
-            - The minimum distance (float).
-            - A tuple of the two class labels (str) that have this minimum distance.
-    """
-    min_distances = {}  # To store the results for each client
-
-    for client_id, protos in local_protos.items():
-        class_labels = list(protos.keys())
-        num_classes = len(class_labels)
-
-        if num_classes < 2:
-            print(f"Client {client_id}: Not enough prototypes to compute distances.")
-            min_distances[client_id] = (None, (None, None))
-            continue  # No pairs to compare
-
-        min_dist = float('inf')
-        min_pair = (None, None)
-
-        # Iterate over all unique pairs of class prototypes
-        for i in range(num_classes):
-            for j in range(i + 1, num_classes):
-                label_i = class_labels[i]
-                label_j = class_labels[j]
-                proto_i = protos[label_i].unsqueeze(0)  # Add batch dimension
-                proto_j = protos[label_j].unsqueeze(0)
-
-                # Compute Euclidean distance
-                dist = F.pairwise_distance(proto_i, proto_j, p=2).item()
-
-                # Update minimum distance and pair if necessary
-                if dist < min_dist:
-                    min_dist = dist
-                    min_pair = (label_i, label_j)
-
-        # Store the minimum distance and corresponding class labels
-        min_distances[client_id] = (min_dist, min_pair)
-
-        # Print the result for the current client
-        print(f"Client {client_id}: Minimum distance = {min_dist:.4f} between classes '{min_pair[0]}' and '{min_pair[1]}'.")
-        
-    return min_distances
-
-
-from typing import Dict, List, Tuple
-
-def inter_client_analysis(local_protos: Dict[int, Dict[str, torch.Tensor]], args) -> Dict[str, List[Tuple[int, float]]]:
-    """
-    For each class, identifies clients with the highest distances of their prototypes
-    compared to other clients' prototypes.
-
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attributes:
-            - top_k (int): Number of top clients to identify per class based on distance.
-
-    Returns:
-    - high_distance_clients (dict):
-        Dictionary mapping each class label to a list of tuples, each containing:
-            - Client index (int)
-            - Distance to the mean prototype (float)
-    """
-    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
-    high_distance_clients = {}  # To store results per class
-
-    # Organize prototypes by class
-    class_protos = {}
-    for client_id, protos in local_protos.items():
-        for class_label, proto in protos.items():
-            class_protos.setdefault(class_label, []).append((client_id, proto))
-
-    # Analyze each class separately
-    for class_label, proto_list in class_protos.items():
-        num_clients = len(proto_list)
-        if num_clients < 2:
-            print(f"Class '{class_label}': Not enough prototypes to compute distances.")
-            high_distance_clients[class_label] = []
-            continue  # No comparison possible
-
-        # Stack all prototypes into a tensor for efficient computation
-        prototypes = torch.stack([proto for _, proto in proto_list])  # Shape: (num_clients, feature_dim)
-
-        # Compute the mean prototype
-        mean_proto = torch.mean(prototypes, dim=0).detach()  # Shape: (feature_dim,)
-
-        # Compute distances of each prototype to the mean prototype
-        distances = F.pairwise_distance(prototypes.detach(), mean_proto.unsqueeze(0), p=2).numpy()  # Shape: (num_clients,)
-
-        # Pair each client with their distance
-        client_distances = [(proto_list[i][0], distances[i]) for i in range(num_clients)]
-
-        # Sort clients based on distance in descending order
-        sorted_clients = sorted(client_distances, key=lambda x: x[1], reverse=True)
-
-        # Select top_k clients with highest distances
-        top_clients = sorted_clients[:top_k]
-
-        # Store the results
-        high_distance_clients[class_label] = top_clients
-
-        # Print the results for the current class
-        print(f"Class '{class_label}': Top {top_k} client(s) with highest distances:")
-        for client_id, dist in top_clients:
-            print(f"  - Client {client_id}: Distance = {dist:.4f}")
-        print()  # Blank line for readability
-
-    return high_distance_clients
-
-
-
-import torch.nn.functional as F
-import torch
-from typing import Dict
-
-def get_min_prototype_distances_simple(
-    local_protos: Dict[int, Dict[str, torch.Tensor]], 
-    args
-) -> Dict[str, any]:
-    """
-    For each client, computes the pairwise distances between all class prototypes,
-    identifies the minimum distance along with the related classes, and determines
-    the overall minimum distance across all clients.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing any additional parameters (not used in this function).
-    
-    Returns:
-    - results (dict):
-        A dictionary containing:
-            - 'per_client_min_distances': Dict mapping client IDs to their minimum distance and related classes.
-            - 'global_min': Dict containing the overall minimum distance, client ID, and related classes.
-    """
-    # Dictionary to store per-client minimum distances and related classes
-    per_client_min_distances = {}
-    
-    # Variables to track the overall minimum distance across all clients
-    global_min_distance = float('inf')
-    global_min_client_id = None
-    global_min_classes = (None, None)
-    
-    # Iterate over each client to compute pairwise distances
-    for client_id, protos in local_protos.items():
-        class_labels = list(protos.keys())
-        num_classes = len(class_labels)
-        
-        if num_classes < 2:
-            print(f"Client {client_id}: Not enough prototypes to compute distances.")
-            per_client_min_distances[client_id] = {
-                'min_distance': None,
-                'class1': None,
-                'class2': None
-            }
-            continue  # Skip to the next client
-        
-        min_distance = float('inf')
-        class1 = None
-        class2 = None
-        
-        # Compute pairwise distances between all unique class pairs
-        for i in range(num_classes):
-            for j in range(i + 1, num_classes):
-                label_i = class_labels[i]
-                label_j = class_labels[j]
-                
-                proto_i = protos[label_i].unsqueeze(0)  # Add batch dimension
-                proto_j = protos[label_j].unsqueeze(0)
-                
-                # Compute Euclidean distance
-                distance = F.pairwise_distance(proto_i, proto_j, p=2).item()
-                
-                # Update minimum distance and related classes if necessary
-                if distance < min_distance:
-                    min_distance = distance
-                    class1 = label_i
-                    class2 = label_j
-        
-        # Store the minimum distance and related classes for the current client
-        per_client_min_distances[client_id] = {
-            'min_distance': min_distance,
-            'class1': class1,
-            'class2': class2
-        }
-        
-        # Print the minimum distance details for the current client
-        print(f"Client {client_id}: Minimum distance = {min_distance:.4f} between classes '{class1}' and '{class2}'.")
-        
-        # Update the global minimum if the current client's min distance is smaller
-        if min_distance < global_min_distance:
-            global_min_distance = min_distance
-            global_min_client_id = client_id
-            global_min_classes = (class1, class2)
-    
-    # After processing all clients, print the overall minimum distance details
-    if global_min_client_id is not None:
-        print("\n=== Overall Minimum Distance ===")
-        print(f"Client {global_min_client_id}: Minimum distance = {global_min_distance:.4f} between classes '{global_min_classes[0]}' and '{global_min_classes[1]}'.")
-    else:
-        print("\nNo minimum distances computed across clients.")
-    
-    # Compile the results into a single dictionary
-    results = {
-        'per_client_min_distances': per_client_min_distances,
-        
-        'client_id': global_min_client_id,
-        'min_distance': global_min_distance,
-        'class1': global_min_classes[0],
-        'class2': global_min_classes[1]
-        
-    }
-    
-    return results
-
-import torch
-import torch.nn.functional as F
-from typing import Dict, Any
-import math
-from scipy.stats import norm
-
-def get_min_prototype_distances_with_zscore(
-    local_protos: Dict[int, Dict[str, torch.Tensor]], 
-    args,
-    confidence_level: float = 0.95,
-) -> Dict[str, Any]:
-    """
-    For each client, computes the pairwise distances between all class prototypes,
-    identifies the minimum distance along with the related classes, and determines
-    the overall minimum distance across all clients. Additionally, applies the Z-score
-    method to detect potential mislabeling noise in local devices.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing any additional parameters (not used in this function).
-    - confidence_level (float, optional):
-        The confidence level for Z-score critical value (default is 0.95).
-    
-    Returns:
-    - results (dict):
-        A dictionary containing:
-            - 'per_client_min_distances': Dict mapping client IDs to their minimum distance and related classes.
-            - 'global_min': Dict containing the overall minimum distance, client ID, and related classes.
-            - 'z_scores': Dict mapping client IDs to their Z-scores.
-            - 'potential_noisy_clients': List of client IDs flagged as potentially having mislabeling noise.
-    """
-    # Dictionary to store per-client minimum distances and related classes
-    per_client_min_distances = {}
-    min_distances = []
-
-    # Variables to track the overall minimum distance across all clients
-    global_min_distance = float('inf')
-    global_min_client_id = None
-    global_min_classes = (None, None)
-
-    # Iterate over each client to compute pairwise distances
-    for client_id, protos in local_protos.items():
-        class_labels = list(protos.keys())
-        num_classes = len(class_labels)
-        
-        if num_classes < 2:
-            print(f"Client {client_id}: Not enough prototypes to compute distances.")
-            per_client_min_distances[client_id] = {
-                'min_distance': None,
-                'class1': None,
-                'class2': None
-            }
-            continue  # Skip to the next client
-        
-        min_distance = float('inf')
-        class1 = None
-        class2 = None
-        
-        # Compute pairwise distances between all unique class pairs
-        for i in range(num_classes):
-            for j in range(i + 1, num_classes):
-                label_i = class_labels[i]
-                label_j = class_labels[j]
-                
-                proto_i = protos[label_i].unsqueeze(0)  # Add batch dimension
-                proto_j = protos[label_j].unsqueeze(0)
-                
-                # Compute Euclidean distance
-                distance = F.pairwise_distance(proto_i, proto_j, p=2).item()
-                
-                # Update minimum distance and related classes if necessary
-                if distance < min_distance:
-                    min_distance = distance
-                    class1 = label_i
-                    class2 = label_j
-        
-        # Store the minimum distance and related classes for the current client
-        per_client_min_distances[client_id] = {
-            'min_distance': min_distance,
-            'class1': class1,
-            'class2': class2
-        }
-        min_distances.append(min_distance)
-        
-        # Print the minimum distance details for the current client
-        print(f"Client {client_id}: Minimum distance = {min_distance:.4f} between classes '{class1}' and '{class2}'.")
-        
-        # Update the global minimum if the current client's min distance is smaller
-        if min_distance < global_min_distance:
-            global_min_distance = min_distance
-            global_min_client_id = client_id
-            global_min_classes = (class1, class2)
-    
-    # After processing all clients, print the overall minimum distance details
-    if global_min_client_id is not None:
-        print("\n=== Overall Minimum Distance ===")
-        print(f"Client {global_min_client_id}: Minimum distance = {global_min_distance:.4f} between classes '{global_min_classes[0]}' and '{global_min_classes[1]}'.")
-    else:
-        print("\nNo minimum distances computed across clients.")
-    
-    # Calculate mean and standard deviation of min distances
-    if len(min_distances) > 0:
-        m_s = sum(min_distances) / len(min_distances)
-        variance = sum((x - m_s) ** 2 for x in min_distances) / len(min_distances)
-        delta_s = math.sqrt(variance)
-        print(f"\nMean of min distances (m_s): {m_s:.4f}")
-        print(f"Standard deviation of min distances (δ_s): {delta_s:.4f}")
-    else:
-        m_s = 0
-        delta_s = 1  # To avoid division by zero
-        print("\nNo min distances available to compute Z-scores.")
-    
-    # Compute Z-scores for each client
-    z_scores = {}
-    potential_noisy_clients = []
-    
-    # Determine critical Z-value for lower-tailed test
-    # For lower-tailed test at confidence_level, critical_z = norm.ppf(1 - confidence_level)
-    critical_z = norm.ppf(1 - confidence_level)
-    print(f"\nCritical Z-value for lower-tailed test at {int(confidence_level*100)}% confidence: {critical_z:.4f}")
-    
-    for client_id, data in per_client_min_distances.items():
-        s_i = data['min_distance']
-        if s_i is None:
-            z_scores[client_id] = None
-            continue
-        z_i = (s_i - m_s) / delta_s if delta_s != 0 else 0
-        z_scores[client_id] = z_i
-        
-        # Flag the client if z_i < critical_z
-        if z_i < critical_z:
-            potential_noisy_clients.append(client_id)
-            print(f"Client {client_id} flagged as potential mislabeling noise (Z-score: {z_i:.2f}).")
-        else:
-            print(f"Client {client_id} not flagged (Z-score: {z_i:.2f}).")
-    
-
-
-    # Compile the results into a single dictionary
-    results = {
-        'per_client_min_distances': per_client_min_distances,
-        
-        'client_id': global_min_client_id,
-        'min_distance': global_min_distance,
-        'class1': global_min_classes[0],
-        'class2': global_min_classes[1],
-        'z_scores': z_scores,
-        'potential_noisy_clients': potential_noisy_clients
-    }
-    
-    return results
-
-
-
-
-
-import torch
-import torch.nn.functional as F
-from typing import Dict, List, Tuple
-
-def inter_client_analysis_max_distance__(
-    local_protos: Dict[int, Dict[str, torch.Tensor]],
-    args
-) -> Dict[str, any]:
-    """
-    Identifies clients whose class prototypes are unusually distant from other classes' prototypes,
-    indicating potential label flipping attacks. Focuses solely on inter-class distances using maximum distance.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attributes:
-            - top_k (int): Number of top clients to identify per class based on maximum inter-class distance.
-            - distance_metric (str): Metric to use for distance computation ('euclidean', 'cosine').
-    
-    Returns:
-    - result (dict):
-        Dictionary containing:
-            - 'high_distance_clients': Dict mapping each class label to a list of clients with their maximum inter-class distances.
-            - 'global_max': Dict containing the overall maximum distance, client ID, and class label.
-    """
-    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
-    distance_metric = getattr(args, 'distance_metric', 'euclidean')
-    
-    high_distance_clients = {}  # To store results per class
-    
-    # Initialize variables to track the overall maximum distance
-    global_max_distance = -float('inf')
-    global_max_client_id = None
-    global_max_class_label = None
-    
-    # Get all class labels
-    all_classes = set()
-    for protos in local_protos.values():
-        all_classes.update(protos.keys())
-    all_classes = sorted(list(all_classes))  # Sort for consistent ordering
-    
-    # Create a list of all client IDs
-    client_ids = sorted(local_protos.keys())
-    
-    # Iterate over each class
-    for class_label in all_classes:
-        # List to store client distance metrics
-        client_distance_metrics = []
-        
-        # Iterate over each client for the current class
-        for client_id in client_ids:
-            if class_label not in local_protos[client_id]:
-                print(f"Client {client_id} does not have a prototype for class '{class_label}'. Skipping.")
-                continue  # Skip if the client does not have this class prototype
-            
-            client_proto = local_protos[client_id][class_label].detach()  # Shape: (feature_dim,)
-            
-            # Initialize distance accumulators
-            inter_distances = []
-            
-            # Compare with all other clients' prototypes of different classes
-            for other_class in all_classes:
-                if other_class == class_label:
-                    continue  # Skip the same class
-                
-                for other_client_id in client_ids:
-                    if other_client_id == client_id:
-                        continue  # Skip comparing with self
-                    if other_class not in local_protos[other_client_id]:
-                        continue  # Skip if the other client does not have this class prototype
-                    
-                    other_proto = local_protos[other_client_id][other_class].detach()
-                    
-                    # Compute distance based on the specified metric
-                    if distance_metric == 'euclidean':
-                        dist = F.pairwise_distance(client_proto.unsqueeze(0), other_proto.unsqueeze(0), p=2).item()
-                    elif distance_metric == 'cosine':
-                        similarity = F.cosine_similarity(client_proto.unsqueeze(0), other_proto.unsqueeze(0)).item()
-                        dist = 1 - similarity  # Convert similarity to distance
-                    else:
-                        raise ValueError(f"Unsupported distance metric: {distance_metric}")
-                    
-                    inter_distances.append(dist)
-            
-            if not inter_distances:
-                # No inter-class distances computed for this client
-                print(f"Client {client_id} in Class '{class_label}' has no inter-class distances. Skipping.")
-                continue
-            
-            # Compute maximum inter-class distance
-            max_distance = max(inter_distances)
-            
-            # Append to the client distance metrics list
-            client_distance_metrics.append({
-                'client_id': client_id,
-                'max_distance': max_distance
-            })
-            
-            # Update global maximum distance if necessary
-            if max_distance > global_max_distance:
-                global_max_distance = max_distance
-                global_max_client_id = client_id
-                global_max_class_label = class_label
-        
-        if not client_distance_metrics:
-            print(f"Class '{class_label}': No distance metrics computed.")
-            high_distance_clients[class_label] = []
-            continue  # No data to process
-        
-        # Sort clients based on maximum inter-class distance in descending order (higher is more suspicious)
-        sorted_clients = sorted(client_distance_metrics, key=lambda x: x['max_distance'], reverse=True)
-        top_clients = sorted_clients[:top_k]
-        
-        # Store the results
-        high_distance_clients[class_label] = top_clients
-        
-        # Print the results for the current class
-        print(f"Class '{class_label}': Top {top_k} client(s) with highest inter-class distances:")
-        for client in top_clients:
-            print(f"  - Client {client['client_id']}: Max Inter-Class Distance = {client['max_distance']:.4f}")
-        print()  # Blank line for readability
-    
-    # After processing all classes, print the overall maximum distance details
-    if global_max_client_id is not None and global_max_class_label is not None:
-        print("=== Overall Maximum Inter-Class Distance ===")
-        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the maximum inter-class distance of {global_max_distance:.4f}.")
-    else:
-        print("No maximum inter-class distance found across classes and clients.")
-    
-    # Compile the results into a single dictionary
-    result = {
-        'high_distance_clients': high_distance_clients,
-    
-        'client_id': global_max_client_id,
-        'class_label': global_max_class_label,
-        'distance': global_max_distance if global_max_client_id is not None else None
-    
-    }
-    
-    return result
-
-
-def inter_client_analysis_max_distance(
-    local_protos: Dict[int, Dict[str, torch.Tensor]], 
-    args
-) -> Dict[str, any]:
-    """
-    Identifies clients with the highest distances per class and determines the overall maximum distance across all classes and clients.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attributes:
-            - top_k (int): Number of top clients to identify per class based on distance.
-    
-    Returns:
-    - result (dict):
-        Dictionary containing:
-            - 'high_distance_clients': Dict mapping each class label to a list of clients with their distances.
-            - 'global_max': Dict containing the overall maximum distance, client ID, and class label.
-    """
-    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
-    high_distance_clients = {}  # To store results per class
-
-    # Initialize variables to track the overall maximum distance
-    global_max_distance = -float('inf')
-    global_max_client_id = None
-    global_max_class_label = None
-
-    # Organize prototypes by class
-    class_protos = {}
-    for client_id, protos in local_protos.items():
-        for class_label, proto in protos.items():
-            class_protos.setdefault(class_label, []).append((client_id, proto))
-
-    # Analyze each class separately
-    for class_label, proto_list in class_protos.items():
-        num_clients = len(proto_list)
-        if num_clients < 2:
-            print(f"Class '{class_label}': Not enough prototypes to compute distances.")
-            high_distance_clients[class_label] = []
-            continue  # No comparison possible
-
-        # Stack all prototypes into a tensor for efficient computation
-        prototypes = torch.stack([proto for _, proto in proto_list])  # Shape: (num_clients, feature_dim)
-
-        # Compute the mean prototype
-        mean_proto = torch.mean(prototypes, dim=0).detach()  # Shape: (feature_dim,)
-
-        # Compute distances of each prototype to the mean prototype within a no_grad context
-        with torch.no_grad():
-            distances = F.pairwise_distance(prototypes, mean_proto.unsqueeze(0), p=2)
-            distances = distances.detach().cpu().numpy()  # Convert to NumPy array safely
-
-        # Pair each client with their distance
-        client_distances = []
-        for i in range(num_clients):
-            client_id, _ = proto_list[i]
-            dist = distances[i]
-            client_distances.append({'client_id': client_id, 'distance': dist})
-
-            # Update global maximum if necessary
-            if dist > global_max_distance:
-                global_max_distance = dist
-                global_max_client_id = client_id
-                global_max_class_label = class_label
-
-        # Sort clients based on distance in descending order and select top_k
-        sorted_clients = sorted(client_distances, key=lambda x: x['distance'], reverse=True)
-        top_clients = sorted_clients[:top_k]
-
-        # Store the results
-        high_distance_clients[class_label] = top_clients
-
-        # Print the results for the current class
-        print(f"Class '{class_label}': Top {top_k} client(s) with highest distances:")
-        for client in top_clients:
-            print(f"  - Client {client['client_id']}: Distance = {client['distance']:.4f}")
-        print()  # Blank line for readability
-
-    # After processing all classes, print the overall maximum distance details
-    if global_max_client_id is not None and global_max_class_label is not None:
-        print("=== Overall Maximum Distance ===")
-        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the maximum distance of {global_max_distance:.4f}.")
-    else:
-        print("No maximum distance found across classes and clients.")
-
-    # Compile the results into a single dictionary
-    result = {
-        'high_distance_clients': high_distance_clients,
-        'client_id': global_max_client_id,
-        'class_label': global_max_class_label,
-        'distance': global_max_distance if global_max_client_id is not None else None
-    
-    }
-
-    return result
-import torch
-import torch.nn.functional as F
-from typing import Dict, List, Tuple
-
-def inter_client_analysis_max_distance_(
-    local_protos: Dict[int, Dict[str, torch.Tensor]], 
-    args
-) -> Dict[str, any]:
-    """
-    Identifies clients with the highest distances per class without using global prototypes.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attributes:
-            - top_k (int): Number of top clients to identify per class based on distance.
-    
-    Returns:
-    - result (dict):
-        Dictionary containing:
-            - 'high_distance_clients': Dict mapping each class label to a list of clients with their distances.
-            - 'global_max': Dict containing the overall maximum distance, client ID, and class label.
-    """
-    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
-    high_distance_clients = {}  # To store results per class
-
-    # Initialize variables to track the overall maximum distance
-    global_max_distance = -float('inf')
-    global_max_client_id = None
-    global_max_class_label = None
-
-    # Organize prototypes by class
-    class_protos = {}
-    for client_id, protos in local_protos.items():
-        for class_label, proto in protos.items():
-            class_protos.setdefault(class_label, []).append((client_id, proto))
-
-    # Analyze each class separately
-    for class_label, proto_list in class_protos.items():
-        num_clients = len(proto_list)
-        if num_clients < 2:
-            print(f"Class '{class_label}': Not enough prototypes to compute distances.")
-            high_distance_clients[class_label] = []
-            continue  # No comparison possible
-
-        # Stack all prototypes into a tensor for efficient computation
-        prototypes = torch.stack([proto for _, proto in proto_list])  # Shape: (num_clients, feature_dim)
-
-        # Compute the mean prototype for this class locally
-        mean_proto = torch.mean(prototypes, dim=0).detach()  # Shape: (feature_dim,)
-
-        # Compute distances of each prototype to the local mean prototype
-        with torch.no_grad():
-            distances = F.pairwise_distance(prototypes, mean_proto.unsqueeze(0), p=2)
-            distances = distances.detach().cpu().numpy()  # Convert to NumPy array safely
-
-        # Pair each client with their distance
-        client_distances = []
-        for i in range(num_clients):
-            client_id, _ = proto_list[i]
-            dist = distances[i]
-            client_distances.append({'client_id': client_id, 'distance': dist})
-
-            # Update global maximum if necessary
-            if dist > global_max_distance:
-                global_max_distance = dist
-                global_max_client_id = client_id
-                global_max_class_label = class_label
-
-        # Sort clients based on distance in descending order and select top_k
-        sorted_clients = sorted(client_distances, key=lambda x: x['distance'], reverse=True)
-        top_clients = sorted_clients[:top_k]
-
-        # Store the results
-        high_distance_clients[class_label] = top_clients
-
-        # Print the results for the current class
-        print(f"Class '{class_label}': Top {top_k} client(s) with highest distances:")
-        for client in top_clients:
-            print(f"  - Client {client['client_id']}: Distance = {client['distance']:.4f}")
-        print()  # Blank line for readability
-
-    # After processing all classes, print the overall maximum distance details
-    if global_max_client_id is not None and global_max_class_label is not None:
-        print("=== Overall Maximum Distance ===")
-        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the maximum distance of {global_max_distance:.4f}.")
-    else:
-        print("No maximum distance found across classes and clients.")
-
-    # Compile the results into a single dictionary
-    result = {
-        'high_distance_clients': high_distance_clients,
-    
-        'client_id': global_max_client_id,
-        'class_label': global_max_class_label,
-        'distance': global_max_distance if global_max_client_id is not None else None
-    
-    }
-
-    return result
-
-
-def inter_client_analysis_isolation_forest(
-    local_protos: Dict[int, Dict[str, torch.Tensor]], 
-    args
-) -> Dict[str, any]:
-    """
-    Identifies anomalous clients per class using Isolation Forest and determines
-    the overall client-class combination with the highest anomaly score.
-    
-    Parameters:
-    - local_protos (dict):
-        Dictionary where keys are client indices and values are dictionaries mapping
-        class labels to prototype tensors.
-    - args:
-        An object containing the following attributes:
-            - top_k (int): Number of top anomalous clients to identify per class based on anomaly score.
-    
-    Returns:
-    - result (dict):
-        Dictionary containing:
-            - 'anomalous_clients_per_class': Dict mapping each class label to a list of anomalous clients with their scores.
-            - 'global_max_anomaly': Dict containing the highest anomaly score, client ID, and class label.
-    """
-    top_k = getattr(args, 'top_k', 1)  # Default to top 1 if not provided
-    anomalous_clients_per_class = {}  # To store results per class
-
-    # Initialize variables to track the overall maximum anomaly score
-    global_max_anomaly_score = -np.inf
-    global_max_client_id = None
-    global_max_class_label = None
-
-    # Organize prototypes by class
-    class_protos = {}
-    for client_id, protos in local_protos.items():
-        for class_label, proto in protos.items():
-            class_protos.setdefault(class_label, []).append((client_id, proto))
-
-    # Analyze each class separately
-    for class_label, proto_list in class_protos.items():
-        num_clients = len(proto_list)
-        if num_clients < 2:
-            print(f"Class '{class_label}': Not enough prototypes to perform anomaly detection.")
-            anomalous_clients_per_class[class_label] = []
-            continue  # Skip to the next class
-
-        # Prepare data for Isolation Forest
-        # Convert prototype tensors to numpy arrays
-        client_ids = []
-        prototypes = []
-        for client_id, proto in proto_list:
-            client_ids.append(client_id)
-            prototypes.append(proto.detach().cpu().numpy())  # Ensure tensor is detached and on CPU
-
-        prototypes_np = np.vstack(prototypes)  # Shape: (num_clients, feature_dim)
-
-        # Initialize Isolation Forest
-        # You can adjust parameters like contamination based on your specific needs
-        iso_forest = IsolationForest(contamination='auto', random_state=42)
-        
-        # Fit Isolation Forest
-        iso_forest.fit(prototypes_np)
-        
-        # Predict anomaly scores (the lower, the more abnormal)
-        anomaly_scores = iso_forest.decision_function(prototypes_np)  # Higher scores are less abnormal
-        # To make higher scores indicate more abnormal, invert the scores
-        anomaly_scores = -anomaly_scores  # Now, higher scores indicate more abnormal
-
-        # Combine client IDs with their anomaly scores
-        client_anomaly_scores = list(zip(client_ids, anomaly_scores))
-
-        # Sort clients based on anomaly scores in descending order
-        sorted_clients = sorted(client_anomaly_scores, key=lambda x: x[1], reverse=True)
-
-        # Select top_k anomalous clients
-        top_anomalous_clients = sorted_clients[:top_k]
-
-        # Store the results
-        anomalous_clients_per_class[class_label] = [
-            {'client_id': client_id, 'anomaly_score': score} 
-            for client_id, score in top_anomalous_clients
-        ]
-
-        # Print the results for the current class
-        print(f"Class '{class_label}': Top {top_k} anomalous client(s):")
-        for client in top_anomalous_clients:
-            print(f"  - Client {client[0]}: Anomaly Score = {client[1]:.4f}")
-        print()  # Blank line for readability
-
-        # Update the global maximum anomaly score if necessary
-        if top_anomalous_clients:
-            class_max_score = top_anomalous_clients[0][1]
-            if class_max_score > global_max_anomaly_score:
-                global_max_anomaly_score = class_max_score
-                global_max_client_id = top_anomalous_clients[0][0]
-                global_max_class_label = class_label
-
-    # After processing all classes, print the overall maximum anomaly details
-    if global_max_client_id is not None and global_max_class_label is not None:
-        print("=== Overall Maximum Anomaly ===")
-        print(f"Client {global_max_client_id} in Class '{global_max_class_label}' has the highest anomaly score of {global_max_anomaly_score:.4f}.")
-    else:
-        print("No anomalies detected across classes and clients.")
-
-    # Compile the results into a single dictionary
-    result = {
-        'anomalous_clients_per_class': anomalous_clients_per_class,
-        'client_id': global_max_client_id,
-        'class_label': global_max_class_label,
-        'anomaly_score': global_max_anomaly_score if global_max_client_id is not None else None
-    
-    }
-
-    return result
-
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix
-from matplotlib import pyplot as plt
-import seaborn as sns
-def get_classes_overlap_old(dataset):
-    k = 9
-    K=9
-    seed = 1234
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # 1. Create a DataLoader to iterate through the dataset
-    batch_size = 64
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-
-    # 2. Extract all features and labels
-    features_list = []
-    labels_list = []
-    for batch in dataloader:
-        # Assume each batch is a tuple (inputs, labels)
-        inputs, labels = batch
-        features_list.append(inputs.cpu())
-        labels_list.append(labels.cpu())
-    
-    # Concatenate all batches
-    features = torch.cat(features_list, dim=0).numpy()
-    labels = torch.cat(labels_list, dim=0).numpy()
-
-    # 3. Apply KMeans clustering to the training data
-    kmeans = KMeans(n_clusters=K, random_state=seed)
-    cluster_labels = kmeans.fit_predict(features)
-
-    #evaluate clustering based on true labels
-    # 4. Evaluate clustering based on true labels
-    ari = adjusted_rand_score(labels, cluster_labels)
-    nmi = normalized_mutual_info_score(labels, cluster_labels)
-    conf_matrix = confusion_matrix(labels, cluster_labels)
-    
-    metrics = {
-        'Adjusted Rand Index': ari,
-        'Normalized Mutual Information': nmi,
-        'Confusion Matrix': conf_matrix
-    }
-    
-    # Optional: Visualize the Confusion Matrix
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
-    plt.xlabel('Cluster Labels')
-    plt.ylabel('True Labels')
-    plt.title('Confusion Matrix: True Labels vs Cluster Labels')
-    plt.show()
-    
-    print("Adjusted Rand Index (ARI):", ari)
-    print("Normalized Mutual Information (NMI):", nmi)
-    # 4. Create a mapping from cluster to class counts
-    unique_classes = np.unique(labels)
-    cluster_class_counts = defaultdict(lambda: defaultdict(int))
-
-    for cluster, label in zip(cluster_labels, labels):
-        cluster_class_counts[cluster][label] += 1
-
-    print("Cluster class counts:", cluster_class_counts)
-
-    # 5. Initialize a dictionary to store co-occurrence counts
-    class_cooccurrence = defaultdict(lambda: defaultdict(int))
-
-    # 6. Calculate co-occurrence counts
-    for cluster, class_count_dict in cluster_class_counts.items():
-        classes_in_cluster = list(class_count_dict.keys())
-        for i, class_a in enumerate(classes_in_cluster):
-            count_a = class_count_dict[class_a]
-            for j, class_b in enumerate(classes_in_cluster):
-                if class_b != class_a:
-                    count_b = class_count_dict[class_b]
-                    # Increment co-occurrence by the product of occurrences
-                    class_cooccurrence[class_a][class_b] += count_a * count_b
-
-    # 7. Determine the most overlapping class for each class
-    classes_overlap = {}
-    for class_a in unique_classes:
-        cooc_dict = class_cooccurrence[class_a]
-        if cooc_dict:
-            # Select class B with the highest co-occurrence count
-            class_b = max(cooc_dict, key=cooc_dict.get)
-            classes_overlap[class_a] = class_b
-        else:
-            # If no co-occurrence found, assign None
-            classes_overlap[class_a] = None
-
-    return classes_overlap
-
-
-def map_cluster_labels(true_labels, cluster_labels):
-    """
-    Maps cluster labels to true labels using the Hungarian Algorithm.
-
-    Parameters:
-    - true_labels: Ground truth labels.
-    - cluster_labels: Labels assigned by KMeans.
-
-    Returns:
-    - new_cluster_labels: Cluster labels mapped to true labels.
-    - mapping: Dictionary mapping original cluster labels to true labels.
-    """
-    conf_matrix = confusion_matrix(true_labels, cluster_labels)
-    # Apply the Hungarian Algorithm to maximize the accuracy
-    row_ind, col_ind = linear_sum_assignment(-conf_matrix)
-    
-    mapping = {}
-    for true_label, cluster_label in zip(row_ind, col_ind):
-        mapping[cluster_label] = true_label
-    
-    # Map the cluster labels to true labels
-    new_cluster_labels = np.copy(cluster_labels)
-    for cluster_label, true_label in mapping.items():
-        new_cluster_labels[cluster_labels == cluster_label] = true_label
-    
-    return new_cluster_labels, mapping
-
-from scipy.optimize import linear_sum_assignment
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, confusion_matrix, silhouette_score, adjusted_mutual_info_score
+from tensorboardX import SummaryWriter
 import random
+import torch.utils.model_zoo as model_zoo
+from pathlib import Path
+from itertools import pairwise
+import math
 
-from sklearn.decomposition import PCA
-def get_classes_overlap(dataset,balanced=True, mapped=True):
-    print("Starting get_classes_overlap function")
-    K = 9  # Number of clusters
-    seed = 1234
-    #balanced, mapped = True, True
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    if balanced:
-        max_samples_per_class = 200
-        print(f"Applying undersampling with max {max_samples_per_class} samples per class.")
-        dataset = undersample_dataset(dataset, max_samples_per_class, seed=seed)
-        print(f"Balanced dataset size: {len(dataset)}")
-        
-    # 1. Create a DataLoader to iterate through the dataset
-    batch_size = 64
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    print("DataLoader created")
+
+lib_dir = (Path(__file__).parent / ".." / "lib").resolve()
+if str(lib_dir) not in sys.path:
+    sys.path.insert(0, str(lib_dir))
+mod_dir = (Path(__file__).parent / ".." / "lib" / "models").resolve()
+if str(mod_dir) not in sys.path:
+    sys.path.insert(0, str(mod_dir))
+
+from resnet import resnet18
+from options import args_parser
+from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack, test_inference_new_het_lt_new, test_inference_new_het_lt_new_op, test_inference_metrics, test_inference_by_attack_server
+from models import CNNMnist, CNNFemnist, CustomCNN, EdgeCustomCNN
+from utils import get_dataset, average_weights, average_weights_, exp_details, proto_aggregation, agg_func, average_weights_per, average_weights_sem, proto_anomaly_detection
+from plot import plot_fl_accuracies, plot_fedproto_accuracies, plot_metrics
+import time
+import time
+from models import Proj, Embedder, DenseModel
+from update import test_inference_all_classes, test_inference_metrics_proto, test_inference_metrics_proto_new, test_inference_by_attack_server_proto, test_inference_by_attack_server_proto_new
+
+from plot import plot_accuracy_comparison, plot_accuracy_comparison_global
+from inference import reconstruct_input,  evaluate_reconstruction, compute_baseline_mse #sample_original_data,
+from poisoning import class_wise_outlier_detection, evaluate_outlier_detection, determine_attacker_outlier_status
+from poisoning import intra_client_analysis, get_min_prototype_distances, inter_client_analysis, get_min_prototype_distances_simple, inter_client_analysis_max_distance, inter_client_analysis_isolation_forest, get_majority_and_target_classes, get_min_prototype_distances_with_zscore
+
+def split_server_and_client_params(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
+    assert client_mode in ['none', 'representation', 'out_layer', 'interpolate']
+
+    def is_on_client(name):
+        if client_mode == 'none':
+            return False
+        elif client_mode == 'representation':
+            return 'conv' in name or 'reshape_layer' in name
+        elif client_mode == 'out_layer':
+            return 'dense2' in name
+        elif client_mode == 'interpolate':
+            return True
+
+    def is_on_server(name):
+        return not is_on_client(name)
+
+    return is_on_client, is_on_server
+
+
+def split_server_and_client_params_old(client_mode, layers_to_client=[], adapter_hidden_dim=-1, dropout=0.):
+
+    assert client_mode in ['none', 'representation', 'out_layer', 'interpolate'] #['none', 'res_layer', 'inp_layer', 'out_layer', 'adapter', 'interpolate', 'finetune'] 
+    is_on_server = None
+    if client_mode == 'none':
+        def is_on_client(name):
+            return False
+    elif client_mode == 'representation':
+        def is_on_client(name):
+            return 'conv' in name
+    elif client_mode == 'out_layer':
+        def is_on_client(name):
+            return 'fc' in name
+    elif client_mode == 'interpolate':
+        is_on_client = lambda _: True
+        is_on_server = lambda _: True
+    if is_on_server is None:
+        def is_on_server(name): 
+            return not is_on_client(name)
+    return is_on_client, is_on_server
+
+
+def average_weights_shared(local_weights, is_on_server):
+    # Copy the weights from the first model as a starting point
+    global_weights = copy.deepcopy(local_weights[0])
+
+    # Initialize the global weights for shared parameters to zero
+    for key in global_weights.keys():
+        if is_on_server(key):
+            print(key)
+            global_weights[key] = torch.zeros_like(global_weights[key])
     
-    # 2. Extract all features and labels
-    features_list = []
-    labels_list = []
-    print("Starting feature and label extraction")
-    with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            if i % 10 == 0:
-                print(f"Processing batch {i}")
-            # Assume each batch is a tuple (inputs, labels)
-            inputs, labels = batch
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            features_list.append(inputs.cpu())
-            labels_list.append(labels.cpu())
-    print("Feature and label extraction completed")
+    # Sum the shared parameters across all local models
+    for i in range(len(local_weights)):
+        for key in global_weights.keys():
+            if is_on_server(key):
+                global_weights[key] += local_weights[i][key]
+
+    # Divide the summed weights by the number of local models to average them
+    for key in global_weights.keys():
+        if is_on_server(key):
+            global_weights[key] = torch.div(global_weights[key], len(local_weights))
     
-    # Concatenate all batches
-    features = torch.cat(features_list, dim=0).numpy()
-    labels = torch.cat(labels_list, dim=0).numpy()
-    print(f"Features shape: {features.shape}, Labels shape: {labels.shape}")
-    
-    scaling = False
-    # 3. Preprocessing: Feature Scaling
-    if scaling:
-        print("Starting feature scaling")
-        scaler = StandardScaler()
-        features_scaled = scaler.fit_transform(features)
-        print("Feature scaling completed")
+    return global_weights
+
+def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
+    accs, losses, f1_scores, precision_scores, f1_macros, acc_macros = [], [], [], [], [], []
+    if args.attack_type == 'none':
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
     else:
-        features_scaled = features
-        
-    # 4. Apply KMeans clustering to the data
-    print("Starting KMeans clustering")
-    kmeans = KMeans(
-        n_clusters=K,
-        init='k-means++',
-        n_init=50,          # Temporarily reduce n_init for testing
-        max_iter=500,       # Temporarily reduce max_iter for testing
-        random_state=seed
-    )
-    cluster_labels = kmeans.fit_predict(features_scaled)
-    print("KMeans clustering completed")
-    
-    if mapped:
-        # 5. Map Cluster Labels to True Labels
-        print("Starting label mapping")
-        cluster_labels_mapped, mapping = map_cluster_labels(labels, cluster_labels)
-        print(mapping)
-        print("Label mapping completed")
-    else:
-        cluster_labels_mapped = cluster_labels
-        mapping = None
-    
-    # 6. Evaluate Clustering Based on True Labels
-    ari = adjusted_rand_score(labels, cluster_labels_mapped)
-    print("ARI computed")
-    print("ARI:", ari)
-    nmi = normalized_mutual_info_score(labels, cluster_labels_mapped)
-    print("NMI computed")
-    print("NMI:", nmi)
-    ami = adjusted_mutual_info_score(labels, cluster_labels_mapped)
-    print("AMI computed")
-    print("AMI:", ami)
-    conf_matrix = confusion_matrix(labels, cluster_labels_mapped)
-    print("Confusion matrix computed")
-    print( "Confusion matrix:", conf_matrix)
-    #sil_score = silhouette_score(features_scaled, cluster_labels)
-    #print("Silhouette score computed")
-    #print("Silhouette Score:", sil_score)
-
-    metrics = {
-        'Adjusted Rand Index': ari,
-        'Normalized Mutual Information': nmi,
-        'Adjusted Mutual Information': ami,
-        'Confusion Matrix': conf_matrix
-    }
-    print("Evaluation metrics computed")
-
-    
-    # 7. Visualization: Confusion Matrix
-    print("Starting visualization")
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
-    plt.xlabel('Cluster Labels')
-    plt.ylabel('True Labels')
-    plt.title('Confusion Matrix: True Labels vs Cluster Labels')
-    plt.savefig('confusion_matrix_mapped'+str(mapped)+'_balanced'+str(balanced)+'.png')
-    print("Visualization completed")
-
-    #pca
-    """print("Starting PCA")
-    pca = PCA(n_components=2)
-    features_pca = pca.fit_transform(features_scaled)
-    print("PCA completed")
-    plt.figure(figsize=(10, 8))
-    plt.scatter(features_pca[:, 0], features_pca[:, 1], c=cluster_labels_mapped, cmap='viridis', s=10)
-    plt.title('PCA: Cluster Labels (Mapped)')
-    plt.xlabel('Principal Component 1')
-    plt.ylabel('Principal Component 2')
-    plt.colorbar()
-    plt.show()
-    print("PCA visualization completed")"""
-    print("Performing PCA for 2D visualization...")
-    pca = PCA(n_components=2, random_state=seed)
-    features_pca = pca.fit_transform(features)
-    print("PCA completed.")
-    
-    # Create a scatter plot with True Labels
-    plt.figure(figsize=(12, 6))
-    
-    # Subplot 1: True Labels
-    plt.subplot(1, 2, 1)
-    sns.scatterplot(x=features_pca[:,0], y=features_pca[:,1], hue=labels, palette='tab10', legend='full', s=30)
-    plt.title('True Labels')
-    plt.xlabel('PCA Component 1')
-    plt.ylabel('PCA Component 2')
-    plt.legend(title='Classes', bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    # Subplot 2: Predicted Clusters
-    plt.subplot(1, 2, 2)
-    sns.scatterplot(x=features_pca[:,0], y=features_pca[:,1], hue=cluster_labels, palette='tab10', legend='full', s=30)
-    plt.title('KMeans Predicted Clusters')
-    plt.xlabel('PCA Component 1')
-    plt.ylabel('PCA Component 2')
-    plt.legend(title='Clusters', bbox_to_anchor=(1.05, 1), loc='upper left')
-    
-    plt.tight_layout()
-    plt.savefig('pca_mapped'+str(mapped)+'_balanced'+str(balanced)+'.png')
-    print("Cluster and true label visualization completed.")
-    
-    # 8. Print Metrics
-    print("Adjusted Rand Index (ARI):", ari)
-    print("Normalized Mutual Information (NMI):", nmi)
-    print("Adjusted Mutual Information (AMI):", ami)
-    print("Cluster to True Label Mapping:", mapping)
-
-    # 9. Determine the most overlapping class for each class
-    print("Starting class overlap analysis")
-    classes_overlap = {}
-
-   
-
-    
-    return metrics, cluster_labels_mapped, mapping, labels, cluster_labels_mapped
-
-
-from collections import defaultdict
-from torch.utils.data import Subset
-
-def undersample_dataset(dataset, max_samples_per_class, seed=1234):
-    """
-    Undersamples the dataset to ensure each class has at most max_samples_per_class samples.
-    
-    Parameters:
-    - dataset: The original PyTorch Dataset.
-    - max_samples_per_class: Maximum number of samples allowed per class.
-    - seed: Random seed for reproducibility.
-    
-    Returns:
-    - balanced_subset: A Subset of the original dataset with balanced classes.
-    """
-    random.seed(seed)
-    
-    labels = dataset.targets
-    num_classes = np.unique(labels).size
-    print(f"Number of classes: {num_classes}")
-    for i in range(num_classes):
-        print(f"Class {i}: {np.sum(labels == i)} samples")
-        indices = np.where(labels == i)[0]
-        if len(indices) > max_samples_per_class:
-            # Randomly select a subset of indices
-            selected_indices = random.sample(indices.tolist(), max_samples_per_class)
-            print(f"Selected {max_samples_per_class} samples for class {i}")
-            if i == 0:
-                selected_indices_all = selected_indices
-            else:
-                selected_indices_all.extend(selected_indices)
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    file_ext = 'before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+    acc_file=open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    f1_file=open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_acc_file=open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    macro_f1_file=open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file=open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    acc_byclient_byclass = []
+    for user_id in range(args.num_users):
+        if args.dataset == 'cicids2017':
+            local_model = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            local_model = EdgeCustomCNN(args=args)
         else:
-            if i == 0:
-                selected_indices_all = indices.tolist()
-            else:
-                selected_indices_all.extend(indices.tolist())
+            local_model = CustomCNN(args=args)
+        model = copy.deepcopy(local_model)
+        local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[user_id], global_round=0)
+        weight, train_losss, train_acc = local_model.update_weights(args, user_id, model=model, global_round=0)
+        if args.dataset == 'cicids2017':
+            test_model = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            test_model = EdgeCustomCNN(args=args)
+        else:
+            test_model = CustomCNN(args=args)
+        test_model.load_state_dict(weight)
+        #acc, loss = test_inference_metrics(args, test_model, test_dataset,)
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, test_model, test_dataset)
+        print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accs.append(acc)
+        f1_scores.append(f1)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        accs.append(acc)
+        losses.append(loss)
 
-    balanced_subset = Subset(dataset, selected_indices_all)
-    return balanced_subset
-
-
-def compute_correlation(true_labels, predicted_labels):
-    """
-    Compute the confusion matrix and a correlation-like matrix between true labels based on shared instances in clusters.
-    
-    Parameters:
-    - true_labels: array-like of shape (n_samples,)
-    - predicted_labels: array-like of shape (n_samples,)
-    
-    Returns:
-    - conf_matrix: pandas DataFrame representing the confusion matrix
-    - correlation_matrix: pandas DataFrame representing the correlation-like matrix
-    """
-    
-    # Compute the confusion matrix
-    conf_matrix = confusion_matrix(true_labels, predicted_labels)
-    conf_df = pd.DataFrame(conf_matrix, 
-                           index=np.unique(true_labels), 
-                           columns=np.unique(predicted_labels))
-    
-    print("Confusion Matrix:")
-    print(conf_df)
-    
-    # Initialize a dictionary to hold co-occurrence counts
-    co_occurrence = {}
-    true_classes = np.unique(true_labels)
-    
-    # Initialize the co-occurrence matrix
-    co_matrix = pd.DataFrame(0, index=true_classes, columns=true_classes)
-    
-    # For each cluster, count the co-occurrences of true label pairs
-    clusters = np.unique(predicted_labels)
-    for cluster in clusters:
-        # Get indices of samples in the current cluster
-        cluster_indices = np.where(predicted_labels == cluster)[0]
-        # Get the true labels for these samples
-        cluster_true_labels = true_labels[cluster_indices]
-        # Compute the co-occurrence within this cluster
-        for i in true_classes:
-            for j in true_classes:
-                count_i = np.sum(cluster_true_labels == i)
-                count_j = np.sum(cluster_true_labels == j)
-                co_matrix.loc[i, j] += count_i * count_j
-    
-    print("\nCorrelation-like Matrix:")
-    print(co_matrix)
-
-    # Plot Correlation-like Matrix Heatmap
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(co_matrix, annot=True,  cmap='YlGnBu')
-    plt.title('Correlation-like Matrix')
-    plt.xlabel('True Label')
-    plt.ylabel('True Label')
-    plt.show()
-    
-    return conf_df, co_matrix
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, test_model, test_dataset, class_)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    acc_file.write(str(accs))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+    acc_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    return accs, losses
 
 
-def compute_correlation_max_sum(true_labels, predicted_labels, visualize=True):
-    """
-    Compute the confusion matrix and a correlation-like matrix based on the maximum sum of pairs of classes across clusters.
-    Optionally visualize the matrices using heatmaps.
+#link scaffold https://github.com/ongzh/ScaffoldFL/blob/master/src/scaffold_main.py
+def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list):
+    timestamp = time.time()
+    filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt'
+    #create folder if not exist
+    # Create folder if it doesn't exist
+    if args.attack_type == 'none':
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    else:
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
     
-    Parameters:
-    - true_labels: array-like of shape (n_samples,)
-    - predicted_labels: array-like of shape (n_samples,)
-    - visualize: bool, default=True. If True, plots the confusion and correlation matrices.
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
+    # Open the file using the created file name
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    #accuracies_file = open(filename, 'w')
+    #recall_file = open(f'../save/recall_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt', 'w')
+    outlier_file = file_folder + 'outlier_krum_eliminated_attacker' + str(args.num_attacker) + '_' + file_ext + '.txt'
+   
     
-    Returns:
-    - conf_matrix: pandas DataFrame representing the confusion matrix
-    - correlation_matrix: pandas DataFrame representing the correlation-like matrix based on max sums
-    """
-    
-    # Compute the confusion matrix
-    conf_matrix = confusion_matrix(true_labels, predicted_labels)
-    # Normalize the confusion matrix
-    conf_matrix_normalized = conf_matrix.astype('float') / conf_matrix.sum(axis=1)[:, np.newaxis]
-    unique_true = np.unique(true_labels)
-    unique_pred = np.unique(predicted_labels)
-    conf_df = pd.DataFrame(conf_matrix_normalized, 
-                           index=unique_true, 
-                           columns=unique_pred)
-    
-    print("Confusion Matrix:")
-    print(conf_df)
-    
-    if visualize:
-        # Plot Confusion Matrix Heatmap
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(conf_df, annot=True, cmap='Blues')
-        plt.title('Confusion Matrix')
-        plt.xlabel('Predicted Cluster')
-        plt.ylabel('True Label')
-        plt.tight_layout()
-        plt.show()
-    
-    # Initialize the correlation-like matrix
-    correlation_matrix = pd.DataFrame(0, index=unique_true, columns=unique_true)
-    
-    # For each pair of true classes, find the maximum sum across all clusters
-    for i in unique_true:
-        for j in unique_true:
-            max_sum = 0
-            for cluster in unique_pred:
-                count_i = conf_df.at[i, cluster]
-                count_j = conf_df.at[j, cluster]
-                current_sum = count_i + count_j
-                if current_sum > max_sum:
-                    max_sum = current_sum
-            correlation_matrix.at[i, j] = max_sum
-    
-    print("\nCorrelation-like Matrix (Max Sum):")
-    print(correlation_matrix)
-    
-    if visualize:
-        # Plot Correlation-like Matrix Heatmap
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(correlation_matrix, annot=True,  cmap='YlGnBu')
-        plt.title('Correlation-like Matrix (Max Sum)')
-        plt.xlabel('True Label')
-        plt.ylabel('True Label')
-        plt.tight_layout()
-        plt.show()
-    
-    return conf_df, correlation_matrix
+    idxs_users = np.arange(args.num_users)
 
+    if args.alg == 'scaffold':
+        #initiliase total delta to 0 (sum of all control_delta, triangle Ci)
+        delta_c = copy.deepcopy(global_model.state_dict())
+        #sum of delta_y / sample size
+        delta_x = copy.deepcopy(global_model.state_dict())
+        #model for local control varietes
+        if args.dataset == 'cicids2017':
+            control_local = [DenseModel(args=args) for i in range(args.num_users)]
+            control_global = DenseModel(args=args)
+        elif args.dataset == 'edgeiiot':
+            control_local = [EdgeCustomCNN(args=args) for i in range(args.num_users)]
+            control_global = EdgeCustomCNN(args=args)
+        else:
+            local_controls = [CustomCNN(args=args) for i in range(args.num_users)]
+            control_global = CustomCNN(args=args)
+        control_weights = control_global.state_dict()
+        #local_models = [cifarCNN(args=args) for i in range(args.num_users)]
+        
+        for net in local_controls:
+            net.load_state_dict(control_weights)
+    if args.alg == 'fedalt' or args.alg == 'fedsim':
+        client_mode = args.client_mode
+        is_on_client, is_on_server = split_server_and_client_params(client_mode)
 
-def compute_ami_correlation_matrix(true_labels, visualize=True):
-    """
-    Compute a correlation-like matrix between true labels using Adjusted Mutual Information (AMI).
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    if args.dataset == 'cicids2017':
+        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    elif args.dataset == 'edgeiiot':
+        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+    else:
+        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    local_weights_prev = []
     
-    Parameters:
-    - true_labels: array-like of shape (n_samples,)
-    - visualize: bool, default=True. If True, plots the correlation matrix heatmap.
-    
-    Returns:
-    - ami_matrix: pandas DataFrame representing the AMI-based correlation matrix
-    """
-    
-    # Identify unique true labels
-    unique_labels = np.unique(true_labels)
-    n_labels = len(unique_labels)
-    
-    # Create a binary matrix where each column represents a true label
-    # and each row represents a sample. Entry is 1 if the sample has the label, else 0.
-    binary_matrix = pd.DataFrame(0, index=np.arange(len(true_labels)), columns=unique_labels)
-    for label in unique_labels:
-        binary_matrix[label] = (true_labels == label).astype(int)
-    
-    # Initialize the AMI correlation matrix
-    ami_matrix = pd.DataFrame(np.zeros((n_labels, n_labels)), 
-                               index=unique_labels, 
-                               columns=unique_labels)
-    
-    # Compute AMI for each pair of labels
-    for i in unique_labels:
-        for j in unique_labels:
-            if i <= j:  # Compute only for upper triangle and diagonal
-                if i == j:
-                    ami = 1.0  # AMI of a label with itself is 1
+    eliminated_results = []
+    for round in tqdm(range(args.rounds)):
+        local_weights,  local_losses, local_accs = [], [], []
+        
+        print(f'\n | Global Training Round : {round + 1} |\n')
+        if args.alg == 'scaffold':
+            for ci in delta_c:
+                delta_c[ci] = 0.0
+            for ci in delta_x:
+                delta_x[ci] = 0.0
+
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
+            if args.alg == 'scaffold':
+
+                weights, loss, acc, local_delta_c, local_delta, control_local_w = local_model.update_weights_scaffold(args, idx, global_model, global_round=round, c_global=control_global, c_local=local_controls[idx])
+                if round != 0:
+                    local_controls[idx].load_state_dict(control_local_w)
+                for w in delta_c:
+                    if round==0:
+                        delta_x[w] += weights[w]
+                    else:
+                        delta_x[w] += local_delta[w]
+                        delta_c[w] += local_delta_c[w]
+                local_weights.append(copy.deepcopy(weights))
+                local_model_list[idx].load_state_dict(copy.deepcopy(weights))
+            elif args.alg == 'fedalt':
+                if round == 0:
+                    w, loss, acc = local_model.update_weights_fedalt(args, idx, model=copy.deepcopy(global_model),local_weights = None, global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev.append(copy.deepcopy(w))            
                 else:
-                    ami = adjusted_mutual_info_score(binary_matrix[i], binary_matrix[j])
-                ami_matrix.at[i, j] = ami
-                ami_matrix.at[j, i] = ami  # Symmetric matrix
+                    w, loss, acc = local_model.update_weights_fedalt(args, idx, model=copy.deepcopy(global_model), local_weights =local_weights_prev[idx], global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev[idx] = copy.deepcopy(w)
+                local_weights.append(copy.deepcopy(w))
+                
+            elif args.alg == 'fedsim':
+                if round == 0:
+                    w, loss, acc = local_model.update_weights_fedsim(args, idx, model=copy.deepcopy(global_model),local_weights=None, global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev.append(copy.deepcopy(w))
+                else:
+                    w, loss, acc = local_model.update_weights_fedsim(args, idx, model=copy.deepcopy(global_model), local_weights=local_weights_prev[idx], global_round=round, is_on_client=is_on_client, is_on_server=is_on_server)
+                    local_weights_prev[idx] = copy.deepcopy(w)
+                    
+                local_weights.append(copy.deepcopy(w))
+            else:
+                w, loss, acc = local_model.update_weights(args, idx, model=copy.deepcopy(global_model), global_round=round)
+                local_weights.append(copy.deepcopy(w))
+            if args.alg != 'scaffold':
+                local_model_list[idx].load_state_dict(copy.deepcopy(w))
+            
+
+            
+            local_losses.append(copy.deepcopy(loss))
+            local_accs.append(copy.deepcopy(acc))
+
+                
+            
+        if args.alg == 'scaffold':
+            #update the delta C (line 16)
+            for w in delta_c:
+                delta_c[w] /= args.num_users
+                delta_x[w] /= args.num_users
+            
+            #update global control variate (line17)
+            control_global_W = control_global.state_dict()
+            global_weights = global_model.state_dict()
+            #equation taking Ng, global step size = 1
+            for w in control_global_W:
+                #control_global_W[w] += delta_c[w]
+                if round == 0:
+                    global_weights[w] = delta_x[w]
+                else:
+                    global_weights[w] += delta_x[w]
+                    control_global_W[w] +=  delta_c[w]
+
+            #update global model
+            control_global.load_state_dict(control_global_W)
+            global_model.load_state_dict(global_weights)
+        elif args.alg == 'fedalt' or args.alg == 'fedsim':
+            global_weights = average_weights_shared(local_weights, is_on_server)
+        elif args.alg == 'krum':
+            global_weights, _ = krum(args, local_weights)
+        elif args.alg == 'multi_krum':
+            global_weights_krum, eliminated_client = multi_krum(args, local_weights, 0, args.num_users-2)
+            print('Eliminated:', eliminated_client)
+                
+            global_weights = global_weights_krum
+            eliminated_results.append( {'round': round, 'eliminated_client': eliminated_client})
+        elif args.alg == 'median':
+            global_weights = median(args,local_weights)
+        elif args.alg == 'trimmed_mean':
+            global_weights = trimmed_mean(args, local_weights)
+        elif args.alg == 'geometric_median':
+            global_weights = geometric_median(args, local_weights)
+        elif args.alg == 'coordinate_wise_median':
+            global_weights = coordinate_wise_median(args, local_weights)
+        else:
+            global_weights = average_weights_(local_weights)
+        # update global weights
+
+        
+        global_model_ = copy.deepcopy(global_model)
+        global_model_.load_state_dict(global_weights, strict=True)
+        global_model = global_model_
+        #local_model_list[idx] = local_model
+
+
+
+        loss_avg = sum(local_losses) / len(local_losses)
+        train_loss.append(loss_avg)
+        global_protos = []
+        if args.alg == 'fedalt' or args.alg == 'fedsim':
+            for user in range(args.num_users):
+                acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, local_model_list[user], test_dataset)
+                print('User {}, test acc {:.5f}, test loss {:.5f}'.format(user, acc, loss))
+        
+        else:
+            """class_counts = [0]*args.num_classes
+            for data, target in test_dataset:
+                for class_ in range(args.num_classes):
+                    if target == class_:
+                        class_counts[class_] += 1+
+            for class_ in range(args.num_classes):
+                print(f'Class {class_} has {class_counts[class_]} samples')"""
+            #acc, loss = test_inference(args, global_model, test_dataset, global_protos)
+            acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics(args, global_model, test_dataset)
+            print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+            #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accuracies.append(acc)
+        f1_scores.append(f1)
+        recall_scores.append(recall)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        """for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+            print(f'Class {class_} acc: {acc}')"""
+
+    acc_byclient_byclass = []
+    for user in range(args.num_users):
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, local_model_list[user], test_dataset, class_)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)
+    acc_byclass = []
+    for class_ in range(args.num_classes):
+        acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+        acc_byclass.append(acc)
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    file.close()
+
+    file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()
+
+    accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
+    with open(outlier_file, 'a') as file:
+        file.write(str(eliminated_results))
+        file.write('\n')
+    file.close()
+
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+    """file_name = file_folder + 'acc_' + file_ext + '.txt'
+    plot_fl_accuracies(filename)
+    file_name = file_folder + 'f1_' + file_ext + '.txt'
+    plot_fl_accuracies(filename)
+    file_name = file_folder + 'macro_acc' + file_ext + '.txt'
+    plot_fl_accuracies(filename)
+    file_name = file_folder + 'macro_f1' + file_ext + '.txt'
+    plot_fl_accuracies(filename)"""
+
+model_urls = {
+    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+    'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+    'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+    'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
+}
+
+
+
+def aggregate_scaffold(args, res_cache, global_params_dict, c_global):
+    # Extract the delta values for model parameters and control variates from res_cache
+    y_delta_cache = list(zip(*res_cache))[0]
+    c_delta_cache = list(zip(*res_cache))[1]
     
-    print("AMI Correlation Matrix:")
-    print(ami_matrix)
+    global_lr = args.lr
+
+    # Filter parameters that require gradients
+    trainable_parameters = filter(
+        lambda param: param.requires_grad, global_params_dict.values()
+    )
+
+    # Update global model
+    avg_weight = torch.tensor(
+        [1 / args.num_users for _ in range(args.num_users)],
+        device=args.device,
+    )
+    for param, y_del in zip(trainable_parameters, zip(*y_delta_cache)):
+        x_del = torch.sum(avg_weight * torch.stack(y_del, dim=-1), dim=-1)
+        param.data += global_lr * x_del
+
+    # Update global control variates
+    for c_g, c_del in zip(c_global, zip(*c_delta_cache)):
+        c_del = torch.sum(avg_weight * torch.stack(c_del, dim=-1), dim=-1)
+        # Since client_id_indices is equal to args.num_users, scaling factor is just 1
+        c_g.data += global_lr * c_del
+
+    return global_params_dict, c_global
+
+
+def aggregate_fedopt(local_weights, global_model):
+        pseudo_grads = self.get_client_pseudo_grads()
+        client_num_train = 1
+
+        pseudo_grads = [fut.wait() for fut in pseudo_grads]
+        client_num_train = [fut.wait() for fut in client_num_train]
+        total_train = sum(client_num_train)
+
+        self.optimizer.zero_grad()
+
+        # probably need to reavluate this...
+        for (param_name,param) in self.model.state_dict().items():
+            self.model.get_parameter(param_name).grad = torch.zeros_like(param)
+
+            for n_train,pseudo_grad in zip(client_num_train,pseudo_grads):
+                self.model.get_parameter(param_name).grad = self.model.get_parameter(param_name).grad + (n_train / total_train) * pseudo_grad[param_name]
+
+        self.optimizer.step()
+
+def aggregate_mapping_layers_(local_weights):
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    for key in aggregated_weights.keys():
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    return aggregated_weights
+def verify_mapping_layers_among_clients(models):
+    reference_weights = models[0].state_dict()
+    for idx, model in enumerate(models[1:], start=1):
+        model_weights = model.state_dict()
+        for key in ['conv1.weight', 'conv1.bias', 'conv2.weight', 'conv2.bias', 'dense1.weight', 'dense1.bias']:
+            if not torch.equal(reference_weights[key], model_weights[key]):
+                print(f'Discrepancy found between model 1 and model {idx + 1} for layer {key}')
+                return False
+    print('All mapping layers are identical across clients.')
+    return True
+
+def aggregate_weights(local_weights):
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    for key in aggregated_weights.keys():
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    return aggregated_weights
+
+import torch
+
+"""def krum(args, local_weights, f=0):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
     
-    if visualize:
-        # Plot the AMI Correlation Matrix Heatmap
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(ami_matrix, annot=True, fmt=".2f", cmap='YlGnBu', 
-                    linewidths=.5, square=True, cbar_kws={"shrink": .5})
-        plt.title('AMI-Based Correlation Matrix Between True Labels')
-        plt.xlabel('True Labels')
-        plt.ylabel('True Labels')
-        plt.tight_layout()
-        plt.show()
+    n = len(gradients)
+    m = n - f - 2  # Number of gradients to consider for scoring
     
-    return ami_matrix
+    # Calculate pairwise distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distances[i, j] = distances[j, i] = torch.norm(gradients[i] - gradients[j])
+    
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[:m + 1])  # Sum the m+1 smallest distances
+        scores.append((score.item(), gradients[i]))
 
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.datasets import make_classification
-def compute_cor(y_test, y_pred):
-    # Create confusion matrix
-    conf_matrix = confusion_matrix(y_test, y_pred)
+    # Select the gradient with the smallest score
+    _, selected_gradient = min(scores, key=lambda x: x[0])
 
-    # Create a co-occurrence matrix based on true classes
-    co_occurrence_matrix = np.zeros((9, 9))
+    # Return the selected gradient as a dictionary
+    return list_todict(selected_gradient, args)"""
 
-    # Fill in the co-occurrence matrix
-    for i in range(len(y_test)):
-        co_occurrence_matrix[y_test[i], y_pred[i]] += 1
-
-    # Normalize the co-occurrence matrix by row
-    co_occurrence_matrix_normalized = co_occurrence_matrix / co_occurrence_matrix.sum(axis=1, keepdims=True)
-
-    # Plot correlation heatmap of the co-occurrence matrix
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(co_occurrence_matrix_normalized, annot=True, cmap="coolwarm", fmt='.2f', square=True)
-    plt.title("True Class Correlation Heatmap")
-    plt.xlabel("True Class")  # Change x-axis label to 'True Class'
-    plt.ylabel("True Class")  # Change y-axis label to 'True Class'
-    plt.show()
-
-def compute_overlap_normalized_cf(y_test, y_pred):
+def krum(args, local_weights, f=0):
     """
-    Computes the normalized confusion matrix, maps true labels to predicted clusters,
-    and detects overlaps where multiple true labels are mapped to the same cluster.
+    Krum aggregation method.
 
-    Parameters:
-    - y_test: array-like of shape (n_samples,)
-        True labels.
-    - y_pred: array-like of shape (n_samples,)
-        Predicted labels (clusters).
+    Args:
+        args: Argument parser or configuration object containing necessary attributes.
+        local_weights (List[OrderedDict]): List of local model updates from clients.
+        f (int): Number of Byzantine (malicious) clients to tolerate.
 
     Returns:
-    - result: dict
-        A dictionary containing:
-        - 'confusion_matrix': The raw confusion matrix.
-        - 'normalized_confusion_matrix': The confusion matrix normalized by true label counts.
-        - 'label_to_cluster_mapping': Mapping from true labels to predicted clusters.
-        - 'overlaps': Clusters that have multiple true labels mapped to them.
+        OrderedDict: Aggregated gradient dictionary.
     """
-    
-    # Step 1: Compute the confusion matrix
-    cf = confusion_matrix(y_test, y_pred)
-    
-    # Step 2: Normalize the confusion matrix by the sum of each row (true labels)
-    normalized_cf = cf.astype('float') / cf.sum(axis=1, keepdims=True)
-    
+    n = len(local_weights)
+    m = n - f - 2  # Number of gradients to consider for scoring
+
+    if m < 1:
+        raise ValueError("Not enough clients to perform Krum with the given f.")
+
+    # Convert OrderedDicts to flat lists
+    gradients = [orderdict_tolist(weight) for weight in local_weights]
+
+    # Convert flat lists to tensors
+    gradients_tensors = [torch.tensor(gradient) for gradient in gradients]
+
+    # Calculate pairwise Euclidean distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distance = torch.norm(gradients_tensors[i] - gradients_tensors[j]).item()
+            distances[i, j] = distances[j, i] = distance
+
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[1:m+1]).item()  # Exclude distance to itself (0)
+        scores.append((score, i, local_weights[i]))
+
+    # Select the gradient with the smallest score
+    scores.sort(key=lambda x: x[0])
+    selected_score, selected_index, selected_gradient = scores[0]
+
+    # Determine eliminated gradients
+    eliminated = [i for i in range(n) if i != selected_index]
+
+    # Print results
+    print("=== Krum Aggregation ===")
+    print(f"Selected Gradient: Client {selected_index + 1} with score {selected_score}")
+    print("Eliminated Gradients:")
+    for idx in eliminated:
+        print(f"  Client {idx + 1}")
+    print("========================\n")
+
+    return selected_gradient, eliminated
 
 
-    # Step 3: Map each true label to the predicted cluster with the highest count
-    # This corresponds to taking the argmax of each row in the confusion matrix
-    label_to_cluster_mapping = np.argmax(cf, axis=1)
+
+def multi_krum(args, local_weights, f=0, num_selected=8):
+    """
+    Multi-Krum aggregation method.
+
+    Args:
+        args: Argument parser or configuration object containing necessary attributes.
+        local_weights (List[OrderedDict]): List of local model updates from clients.
+        f (int): Number of Byzantine (malicious) clients to tolerate.
+        num_selected (int): Number of gradients to select for aggregation.
+
+    Returns:
+        OrderedDict: Aggregated gradient dictionary.
+    """
+    n = len(local_weights)
+    m = n - f - 2  # Number of gradients to consider for scoring
+
+    if m < 1:
+        raise ValueError("Not enough clients to perform Multi-Krum with the given f.")
+
+    # Set num_selected to max_num_selected or lower
+    num_selected = min(n-f-2, num_selected) 
+    """if num_selected > n - f - 2:
+        raise ValueError(f"num_selected should be <= {n - f - 2}, got {num_selected}")"""
+
+    # Convert OrderedDicts to flat lists
+    gradients = [orderdict_tolist(weight) for weight in local_weights]
+
+    # Convert flat lists to tensors
+    gradients_tensors = [torch.tensor(gradient) for gradient in gradients]
+
+    # Calculate pairwise Euclidean distances
+    distances = torch.zeros((n, n))
+    for i in range(n):
+        for j in range(i + 1, n):
+            distance = torch.norm(gradients_tensors[i] - gradients_tensors[j]).item()
+            distances[i, j] = distances[j, i] = distance
+
+    # Calculate scores for each gradient
+    scores = []
+    for i in range(n):
+        sorted_distances, _ = torch.sort(distances[i])
+        score = torch.sum(sorted_distances[1:m+1]).item()  # Exclude distance to itself (0)
+        scores.append((score, i, local_weights[i]))
+
+    # Sort gradients based on their scores (lower is better)
+    scores.sort(key=lambda x: x[0])
+
+    # Select the top 'num_selected' gradients with the smallest scores
+    selected = scores[:num_selected]
+    selected_indices = [item[1] for item in selected]
+    selected_gradients = [item[2] for item in selected]
+
+    # Determine eliminated gradients
+    eliminated = [i for i in range(n) if i not in selected_indices]
+
+    # Aggregate by averaging
+    # Convert selected OrderedDicts to flat lists and then to tensors
+    selected_flat_lists = [orderdict_tolist(weight) for weight in selected_gradients]
+    selected_tensors = [torch.tensor(flat_list) for flat_list in selected_flat_lists]
+    aggregated_tensor = torch.mean(torch.stack(selected_tensors), dim=0)
+
+    # Convert the aggregated tensor back to OrderedDict
+    template = local_weights[0]  # Assuming all state_dicts have the same keys and shapes
+    aggregated_state_dict = list_todict(aggregated_tensor.tolist(), args)
+
+    # Print results
+    print("=== Multi-Krum Aggregation ===")
+    print("Selected Gradients:")
+    for score, idx, _ in selected:
+        print(f"  Client {idx + 1} with score {score}")
+    print("Eliminated Gradients:")
+    for idx in eliminated:
+        print(f"  Client {idx + 1}")
+    print("==============================")
+    """print(f"Aggregated Gradient (Multi-Krum):")
+    for key, tensor in aggregated_state_dict.items():
+        print(f"  {key}: {tensor}")
+    print("\n")"""
+
+    return aggregated_state_dict, eliminated
+
+
+def median(args, local_weights):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
     
-    # Optional: If you have label names, you can map indices back to label names
-    # For simplicity, assuming labels are integers starting from 0
+    # Stack all gradients along a new dimension and take the median along that dimension
+    stacked_gradients = torch.stack(gradients)
+    median_gradient = torch.median(stacked_gradients, dim=0).values
     
-    # Step 4: Detect overlaps where multiple true labels are mapped to the same cluster
-    cluster_to_labels = defaultdict(list)
-    for true_label, pred_cluster in enumerate(label_to_cluster_mapping):
-        cluster_to_labels[pred_cluster].append(true_label)
-    conf_matrix = normalized_cf
-    print("Starting visualization")
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(conf_matrix, annot=True,  cmap='Blues')
-    plt.xlabel('Cluster Labels')
-    plt.ylabel('True Labels')
-    plt.title('Confusion Matrix: True Labels vs Cluster Labels')
-    plt.show()
-    print("Visualization completed")
+    # Return the median gradient as a dictionary
+    return list_todict(median_gradient.tolist(), args)
+
+
+
+def trimmed_mean(args, local_weights, trim_ratio=0.1):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
     
-    # Identify clusters that have more than one true label mapped to them
-    overlaps = {cluster: labels for cluster, labels in cluster_to_labels.items() if len(labels) > 1}
+    # Number of elements to trim from each end
+    trim_count = int(len(gradients) * trim_ratio)
     
-    # Prepare the result
-    result = {
-        'confusion_matrix': cf,
-        'normalized_confusion_matrix': normalized_cf,
-        'label_to_cluster_mapping': label_to_cluster_mapping,
-        'overlaps': overlaps
-    }
-    print(result)
-    return result
+    # Stack all gradients along a new dimension
+    stacked_gradients = torch.stack(gradients)
+    
+    # Sort and trim along the new dimension
+    sorted_gradients, sorted_indices = torch.sort(stacked_gradients, dim=0)
+    trimmed_gradients = sorted_gradients[trim_count:-trim_count]  # Trim the extremes
+    print("indices in trimmed mean", sorted_indices)
+    
+    # Compute the mean of the trimmed gradients
+    trimmed_mean_gradient = torch.mean(trimmed_gradients, dim=0)
+    
+    # Return the trimmed mean gradient as a dictionary
+    return list_todict(trimmed_mean_gradient.tolist(), args)
+
+def geometric_median(args, local_weights, max_iter=100, eps=1e-5):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Start with the mean as an initial estimate for the geometric median
+    median = torch.mean(torch.stack(gradients), dim=0)
+    
+    for _ in range(max_iter):
+        distances = torch.stack([torch.norm(gradient - median) for gradient in gradients])
+        weights = 1.0 / torch.clamp(distances, min=eps)
+        weights /= weights.sum()
+        
+        new_median = torch.sum(torch.stack([weight * gradient for weight, gradient in zip(weights, gradients)]), dim=0)
+        
+        if torch.norm(new_median - median) < eps:
+            break
+        median = new_median
+    
+    # Return the geometric median as a dictionary
+    return list_todict(median.tolist(), args)
+
+
+def coordinate_wise_median(args, local_weights):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    # Stack all gradients along a new dimension and take the median along each coordinate
+    stacked_gradients = torch.stack(gradients)
+    coordinate_wise_median = torch.median(stacked_gradients, dim=0).values
+    
+    # Return the coordinate-wise median gradient as a dictionary
+    return list_todict(coordinate_wise_median.tolist(), args)
+
+import torch
+import os
+
+def angular_BRSA(args,local_weights, angle_threshold=0.5):
+    # Convert local weights to a list of tensors
+    gradients = [torch.Tensor(orderdict_tolist(gradient)) for gradient in local_weights]
+    
+    n = len(gradients)
+    cosine_similarities = torch.zeros((n, n))
+    
+    # Normalize gradients to unit vectors for cosine similarity calculation
+    normalized_gradients = [g / torch.norm(g) for g in gradients]
+    
+    # Calculate pairwise cosine similarities
+    for i in range(n):
+        for j in range(i + 1, n):
+            cosine_similarity = torch.dot(normalized_gradients[i], normalized_gradients[j])
+            cosine_similarities[i, j] = cosine_similarities[j, i] = cosine_similarity
+    
+    # Identify and filter out gradients with low cosine similarity
+    aligned_gradients = []
+    for i in range(n):
+        if torch.mean(cosine_similarities[i]) >= angle_threshold:
+            aligned_gradients.append(gradients[i])
+    
+    # Aggregate the aligned gradients (using mean in this example)
+    if aligned_gradients:
+        aggregated_gradient = torch.mean(torch.stack(aligned_gradients), dim=0)
+    else:
+        # Fallback: if no aligned gradients, use simple mean of all gradients
+        aggregated_gradient = torch.mean(torch.stack(gradients), dim=0)
+    
+    # Return the aggregated gradient as a dictionary
+    return list_todict(aggregated_gradient.tolist(), args)
+
+
+
+
+def orderdict_tolist(w):
+    weight_dict = dict(w.items())
+    weight_list = []
+    for key in weight_dict.keys():
+        weight_list.extend(torch.flatten(weight_dict[key]).tolist())
+    return weight_list
+
+def list_todict(weight_list, args):
+    if args.dataset == 'cicids2017':
+        model = DenseModel(args)
+    elif args.dataset == 'edgeiiot':
+        model = EdgeCustomCNN(args)
+    else:
+        model = CustomCNN(args)  # Assuming CustomCNN is your model
+    state_dict = model.state_dict()
+    start_index = 0
+    for key, value in state_dict.items():
+        num_elements = value.numel()
+        reshaped_tensor = torch.tensor(weight_list[start_index:start_index + num_elements]).reshape(value.shape)
+        state_dict[key] = reshaped_tensor
+        start_index += num_elements
+    return state_dict
+
+
+def aggregate_mapping_layers(local_weights):
+    # Create a deep copy of the first client's weights as the base
+    aggregated_weights = copy.deepcopy(local_weights[0])
+    
+    # Filter out mapping layer weights that need to be aggregated
+    mapping_layer_keys = [k for k in aggregated_weights.keys() if 'conv1' in k or 'conv2' in k or 'dense1' in k]
+
+    # Aggregate only the mapping layer weights
+    for key in mapping_layer_keys:
+        for i in range(1, len(local_weights)):
+            aggregated_weights[key] += local_weights[i][key]
+        aggregated_weights[key] = torch.div(aggregated_weights[key], len(local_weights))
+    
+    # Return updated weights for each client
+    updated_weights_list = []
+    for client_weights in local_weights:
+        # Deep copy to keep the original structure
+        client_updated_weights = copy.deepcopy(client_weights)
+        
+        # Only update the aggregated mapping layer weights
+        for key in mapping_layer_keys:
+            client_updated_weights[key] = aggregated_weights[key]
+        
+        updated_weights_list.append(client_updated_weights)
+    
+    return updated_weights_list
+
+
+
+def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none', classes_distribution=None):
+    summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
+    timestamp = time.time()
+    """filename_wo = f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpga{args.alpha}_e_{args.num_users}u{timestamp}.txt'
+    filename_w = f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpga{args.alpha}_e_{args.num_users}u{time}.txt'
+    accuracies_file_wo = open (filename_wo, 'w') #open(f'../save/accuracies_FedProto_wo_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')
+    accuracies_file_w = open(filename_w, 'w') #open(f'../save/accuracies_FedProto_w_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt', 'w')"""
+    #filename = f'../save/accuracies_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt'
+    #create folder if not exist
+    # Create folder if it doesn't exist
+    if not args.classic_eval:
+        args.alg = 'FedProto_new' 
+    if not os.path.exists('../save_attack4/'):
+        os.makedirs('../save_attack4/')
+    if not os.path.exists('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/'):
+        os.makedirs('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/')
+        print('Created folder')
+    else:
+        print('Folder exists')
+    if args.attack_type == 'none':
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    else:
+        file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
+    # Open the file using the created file name
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    reconstruction_loss_file = file_folder + 'reconstruction_loss_' + file_ext + '.txt'
+    baseline_loss_file = file_folder + 'baseline_loss_' + file_ext + '.txt'
+    maj_class, target_class = get_majority_and_target_classes(args,train_dataset, user_groups[args.num_attacker[0]])
+    outlier_file = file_folder + 'outlier_' + args.outlier_type + '_eliminated_' + str(args.eliminate_outlier) +'_attacker' + str(args.num_attacker) + 'maj_cs'+str(maj_class)+ 'target_cs_' + str(target_class) +'_' + file_ext + '.txt'
+    global_protos = [] 
+    idxs_users = np.arange(args.num_users)
+
+    train_loss, train_accuracy = [], []
+    global_model = copy.deepcopy(local_model_list[0])
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    eliminated_results = []
+
+    if args.dataset == 'cicids2017':
+        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+    elif args.dataset == 'edgeiiot':
+        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+    else:
+        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+    local_weights_prev = []
+    acc_byclient_byclass = []
+    baseline_loss = []
+    acc_byround_byclass = []
+    for round in tqdm(range(args.rounds)):
+        local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
+        print(f'\n | Global Training Round : {round + 1} |\n')
+
+        proto_loss = 0
+        reconstruct_loss = []
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
+            
+            
+            #w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            #w, loss, acc, protos = local_model.update_weights_het_prox(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            w, loss, acc, protos = local_model.update_weights_het_prox_weighted(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+
+            agg_protos = agg_func(protos)
+            local_model_list[idx].load_state_dict(copy.deepcopy(w))
+
+
+            local_weights.append(copy.deepcopy(w))
+            local_losses.append(copy.deepcopy(loss['total']))
+            local_protos[idx] = agg_protos
+            summary_writer.add_scalar('Train/Loss/user' + str(idx + 1), loss['total'], round)
+            summary_writer.add_scalar('Train/Loss1/user' + str(idx + 1), loss['1'], round)
+            summary_writer.add_scalar('Train/Loss2/user' + str(idx + 1), loss['2'], round)
+            summary_writer.add_scalar('Train/Acc/user' + str(idx + 1), acc, round)
+            proto_loss += loss['2']
+            mapping_layers_weights = {k: v for k, v in w.items() if 'conv1' in k or 'conv2' in k or 'dense1' in k}
+            local_mapping_weights.append(copy.deepcopy(mapping_layers_weights))
+            projection_model = copy.deepcopy(local_model_list[idx])
+            if args.inference:
+                reconstruct_loss_client = []
+                baseline_loss_client = []
+                input_shape = (args.num_features,) 
+                
+                for (label,C_i) in local_protos[idx].items():
+                    X_reconstructed = reconstruct_input(args, projection_model, C_i,  
+                                        learning_rate=0.01, num_iterations=1000, 
+                                        lambda_l2=1e-4, lambda_l1=1e-4)
+                
+                    # Move to CPU and convert to NumPy for analysis
+                    X_reconstructed_np = X_reconstructed.cpu().numpy()
+                    sample_size = 1
+                    #sampled_original_data = sample_original_data(train_dataset, sample_size=sample_size)
+
+                    # Evaluate the attack
+                    #similarity_metrics = evaluate_reconstruction(X_reconstructed, sampled_original_data[label])
+                    mse_baseline = compute_baseline_mse(args, train_dataset, label, user_groups[idx])
+                    distance = evaluate_reconstruction(args, X_reconstructed, train_dataset, label,user_groups[idx])
+                    reconstruct_loss_client.append(distance)
+                    baseline_loss_client.append(mse_baseline)
+                
+                reconstruct_loss.append(reconstruct_loss_client)
+                baseline_loss.append(baseline_loss_client)
+                    
+        with open(reconstruction_loss_file, 'a') as file:
+            file.write(str(reconstruct_loss))
+            file.write('\n')
+        
+        with open(baseline_loss_file, 'a') as file:
+            file.write(str(baseline_loss))
+            file.write('\n')
+
+        """# Aggregate mapping layers
+        global_mapping_weights = aggregate_weights(local_weights) #aggregate_mapping_layers(local_mapping_weights)
+
+        # Update local models' mapping layers with aggregated weights
+        for idx in idxs_users:
+            local_model = local_model_list[idx]
+            model_state_dict = local_model.state_dict()
+            model_state_dict.update(global_mapping_weights)
+            local_model.load_state_dict(model_state_dict, strict=False)
+            local_model_list[idx] = local_model"""
+        if aggregated == 'none':
+            print('No aggregation')
+            """local_weights_list = local_weights
+
+            for idx in idxs_users:
+                local_model = copy.deepcopy(local_model_list[idx])
+                local_model.load_state_dict(local_weights_list[idx], strict=True)
+                local_model_list[idx] =  local_model"""
+        elif aggregated == 'mapping_layers':
+            print('Aggregating mapping layers')
+            # Aggregate mapping layers
+            w_list_agg = aggregate_mapping_layers(local_mapping_weights)
+
+            for idx, local_model in enumerate(local_model_list):
+                # Load the aggregated state dict back into the model
+                local_model.load_state_dict(w_list_agg[idx], strict=False)
+
+            """global_mapping_weights = aggregate_mapping_layers(local_mapping_weights)
+
+            # Update local models' mapping layers with aggregated weights
+            for idx in idxs_users:
+                local_model = local_model_list[idx]
+                model_state_dict = local_model.state_dict()
+                model_state_dict.update(global_mapping_weights)
+                local_model.load_state_dict(model_state_dict, strict=False)
+                local_model_list[idx] = local_model"""
+        elif aggregated == 'all_layers':
+            #if args.proto_robust:
+            # Perform anomaly detection before aggregating prototypes
+            #s = intra_client_analysis(local_protos, args)
+            #print('Intra-client analysis:', s)
+            """get_min_prototype_distances(local_protos, args)
+            inter_client_analysis(local_protos, args)
+            trusted_clients = proto_anomaly_detection(local_protos, args)
+
+            # Update local_model_list to only include trusted clients
+            # For simplicity, we will use indices of trusted clients
+            trusted_idxs = [idx for idx in idxs_users if idx in trusted_clients]
+            print("-----------------------------------------")
+            print(f'Trusted clients: {trusted_idxs}')
+            print("-----------------------------------------")
+            if args.num_attacker in trusted_clients:
+                print('Attacker not eliminated')
+            else:
+                print('Attacker eliminated')"""
+            if args.outlier_type == 'intra':
+                    
+                #results = get_min_prototype_distances_simple(local_protos, args)
+                results = get_min_prototype_distances_with_zscore(local_protos, args)
+                print('Min distances:', results)
+                eliminated_client = [results['client_id']]
+                #correct_clients = [idx for idx in idxs_users if idx not in eliminated_client]
+                
+                #trusted_local_weights = [local_weights[i] for i, idx in enumerate(idxs_users) if idx in trusted_clients]
+                # Aggregate weights
+                #global_weights = average_weights_(trusted_local_weights)
+            elif args.outlier_type == 'inter_distance':
+                results = inter_client_analysis_max_distance(local_protos, args)
+                print('Max distances:', results)
+                eliminated_client = [results['client_id']]
+                
+            elif args.outlier_type == 'inter_forest':
+                results = inter_client_analysis_isolation_forest(local_protos, args)
+                print('Isolation forest:', results)
+                eliminated_client = [results['client_id']]
+            elif args.outlier_type == 'multi_krum':
+                global_weights_krum, eliminated_client = multi_krum(args, local_weights, 0, args.num_users-2)
+                print('Eliminated:', eliminated_client)
+            if args.eliminate_outlier and args.outlier_type in ['intra', 'inter_distance', 'inter_forest', 'multi_krum']:
+                if args.outlier_type in ['multi_krum']:
+                    global_weights = global_weights_krum
+                    global_protos = proto_aggregation({idx: local_protos[idx]  for i, idx in enumerate(idxs_users) if idx not in eliminated_client})
+                    eliminated_results.append( {'round': round, 'eliminated_client': eliminated_client})
+                else: 
+                    local_weights_correct = [local_weights[i] for i, idx in enumerate(idxs_users) if idx not in eliminated_client]
+                    global_weights = average_weights_(local_weights_correct)
+                    global_protos = proto_aggregation({idx: local_protos[idx]  for i, idx in enumerate(idxs_users) if idx not in eliminated_client})
+                    if args.outlier_type == 'intra':
+                        labels = [results['class1'], results['class2']]
+                    else:
+                        labels = results['class_label']
+                    eliminated_results.append( {'round': round, 'eliminated_client': eliminated_client, 'eliminated_class': labels})
+                    
+            else:
+                global_weights = average_weights_(local_weights)
+                global_protos = proto_aggregation(local_protos)
+            # update global weights
+
+            """if args.outlier_detection:
+                outliers_per_class = class_wise_outlier_detection( local_protos,args.num_classes)
+                attacked_clients = [args.num_attacker]
+                #metrics = evaluate_outlier_detection(outliers_per_class, attacked_clients, args.num_users, args.num_classes)
+                outlier_status = determine_attacker_outlier_status(outliers_per_class, args.num_attacker, train_dataset, user_groups[idx])
+                print('Outlier status:', outlier_status)
+
+                # Aggregate weights
+                global_weights_krum, eliminated = multi_krum(args, local_weights, 0, args.num_users-2)#average_weights_(local_weights)
+                
+                if  args.num_attacker in eliminated:
+                    print('Attacker eliminated')
+                else:
+                    print('Attacker not eliminated')"""
+            #global_weights = average_weights_(local_weights)
+            global_model_ = copy.deepcopy(global_model)
+            global_model_.load_state_dict(global_weights, strict=True)
+            global_model = global_model_
+            # update global weights
+            local_weights_list = local_weights
+
+            for idx in idxs_users:
+                local_model = copy.deepcopy(global_model)
+                local_model.load_state_dict(local_weights_list[idx], strict=True)
+                local_model_list[idx] = global_model #local_model
+
+
+            
+
+        # update global protos
+        """if args.proto_robust:
+            global_protos = proto_aggregation({idx: local_protos[idx] for idx in trusted_idxs})
+        else:
+            global_protos = proto_aggregation(local_protos)"""
+
+        loss_avg = sum(local_losses) / len(local_losses)
+        train_loss.append(loss_avg)
+        # Verify that all clients have the same mapping layers
+        """if not verify_mapping_layers_among_clients(local_model_list):
+            print('Mismatch found in mapping layers among clients.')
+        else:
+            print('All clients have identical mapping layers.')"""
+        if args.classic_eval:
+            acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos)
+        else:
+            acc_list_l, acc_list_g, loss_list = test_inference_new_het_lt_new(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos, classes_distribution)
+        print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+        print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+        print('For all users (with protos), mean of proto loss is {:.5f}, std of test loss is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+        #accuracies_file_wo.write(str(acc_list_l))
+        #accuracies_file_w.write(str(acc_list_g))
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = 0, 0, 0, 0, 0, 0, 0
+        acc_byclient_byclass = []
+        
+        if aggregated == 'all_layers':
+            if classic_eval:
+                acc, f1, precision, recall, acc_macro, f1_macro, loss, acc_by_class_ = test_inference_metrics_proto(args, global_model, test_dataset, global_protos)
+            else:
+                acc, f1, precision, recall, acc_macro, f1_macro, loss = test_inference_metrics_proto_new(args,idx, global_model, test_dataset, global_protos, classes_distribution)
+            
+            for idx in idxs_users:
+                acc_byclient_byclass.append(acc_by_class_)
+            acc_byround_byclass.append(acc_by_class_)
+        else:
+            for idx in idxs_users:
+                if classic_eval:
+                    acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_ = test_inference_metrics_proto(args, local_model_list[idx], test_dataset, global_protos)
+                else:
+                    acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_ = test_inference_metrics_proto_new(args,idx, local_model_list[idx], test_dataset, global_protos, classes_distribution)
+                acc += acc_/args.num_users
+                f1 += f1_/args.num_users
+                precision += precision_/args.num_users
+                recall += recall_/args.num_users
+                acc_macro += acc_macro_/args.num_users
+                f1_macro += f1_macro_/args.num_users
+                loss += loss_/args.num_users
+            acc_byclient_byclass.append(acc_by_class_)
+            
+        print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+        #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        accuracies.append(acc)
+        f1_scores.append(f1)
+        recall_scores.append(recall)
+        precision_scores.append(precision)
+        f1_macros.append(f1_macro)
+        acc_macros.append(acc_macro)
+        """for class_ in range(args.num_classes):
+            acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
+            print(f'Class {class_} acc: {acc}')"""
+
+    """acc_byclient_byclass = []
+    for user in range(args.num_users):
+        acc_byclass = []
+        for class_ in range(args.num_classes):
+            if classic_eval:
+                acc, loss = test_inference_by_attack_server_proto(args, local_model_list[user], test_dataset, class_)
+            else: 
+                acc, loss = test_inference_by_attack_server_proto_new(args, local_model_list[user], test_dataset, class_, classes_distribution)
+            acc_byclass.append(acc)
+        acc_byclient_byclass.append(acc_byclass)"""
+    """acc_byclass = []
+    for class_ in range(args.num_classes):
+        acc, loss = test_inference_by_attack_server_proto(args, global_model, test_dataset, class_)
+        acc_byclass.append(acc)"""
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_byclient_byclass))
+    file.close()
+    file_acc_byround_byclass = file_folder + 'acc_byround_byclass_' + file_ext + '.txt'
+    with open(file_acc_byround_byclass, 'w') as file:
+        file.write(str(acc_byround_byclass))
+    file.close()
+
+    with open(outlier_file, 'a') as file:
+        file.write(str(eliminated_results))
+        file.write('\n')
+    file.close()
+
+    """file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()"""
+
+    accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+    #accuracies_file_wo.write('\n')
+    #accuracies_file_w.write('\n')
+    """for label in range(args.num_classes):
+        print("--------------------------------------------------------------------------")
+        print(f'For class {label}')
+        acc_list_l, acc_list_g, loss_list = test_inference_new_het_by_attack(args, local_model_list, test_dataset, user_groups_lt, global_protos, label)
+        print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+        print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+        print('For all users (with protos), mean of proto loss is {:.5f}, std of test acc is {:.5f}'.format(np.mean(loss_list), np.std(loss_list)))
+        accuracies_file_wo.write(str(acc_list_l))
+        accuracies_file_w.write(str(acc_list_g))
+        accuracies_file_wo.write('\n')
+        accuracies_file_w.write('\n')"""
+    """for idx in idxs_users:
+        acc, loss = test_inference(args, local_model_list[idx], test_dataset, global_protos)
+        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+        acc = test_inference_new_het(args, local_model_list, test_dataset,global_protos)
+        print('For all users, mean of test acc is {:.5f}'.format(acc))"""
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    
+    """accuracies_file_wo.close()
+    accuracies_file_w.close()
+    plot_fedproto_accuracies(filename_wo)
+    plot_fedproto_accuracies(filename_w)"""
+
+
+def FedProto_modelheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list):
+    summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_mh_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
+
+    global_protos = []
+    idxs_users = np.arange(args.num_users)
+
+    train_loss, train_accuracy = [], []
+
+    for round in tqdm(range(args.rounds)):
+        local_weights, local_losses, local_protos = [], [], {}
+        print(f'\n | Global Training Round : {round + 1} |\n')
+
+        proto_loss = 0
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
+            if args.alg == 'fedprox':
+                w, loss, acc, protos = local_model.update_weights_prox(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            else:
+                w, loss, acc, protos = local_model.update_weights_het(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            agg_protos = agg_func(protos)
+
+            local_weights.append(copy.deepcopy(w))
+            local_losses.append(copy.deepcopy(loss['total']))
+
+            local_protos[idx] = agg_protos
+            summary_writer.add_scalar('Train/Loss/user' + str(idx + 1), loss['total'], round)
+            summary_writer.add_scalar('Train/Loss1/user' + str(idx + 1), loss['1'], round)
+            summary_writer.add_scalar('Train/Loss2/user' + str(idx + 1), loss['2'], round)
+            summary_writer.add_scalar('Train/Acc/user' + str(idx + 1), acc, round)
+            proto_loss += loss['2']
+
+        # update global weights
+        local_weights_list = local_weights
+
+        for idx in idxs_users:
+            local_model = copy.deepcopy(local_model_list[idx])
+            local_model.load_state_dict(local_weights_list[idx], strict=True)
+            local_model_list[idx] = local_model
+
+        # update global protos
+        global_protos = proto_aggregation(local_protos)
+
+        loss_avg = sum(local_losses) / len(local_losses)
+        train_loss.append(loss_avg)
+    
+    acc_list_l, acc_list_g = test_inference_new_het_lt_new(args, local_model_list, test_dataset, classes_list, user_groups_lt, global_protos, classes_distribution)
+    print('For all users (with protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_g),np.std(acc_list_g)))
+    print('For all users (w/o protos), mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_list_l), np.std(acc_list_l)))
+
+def FedPCL(args,  train_dataset_list, test_dataset_list, user_groups, user_groups_test, backbone_list, local_model_list):
+    global_protos = {}
+    global_avg_protos = {}
+    local_protos = {}
+    if not os.path.exists('../save_attack4/'):
+        os.makedirs('../save_attack4/')
+    if not os.path.exists('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/'):
+        os.makedirs('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/')
+        print('Created folder')
+    else:
+        print('Folder exists')
+    file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    
+    file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
+    # Open the file using the created file name
+    accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
+    #unweighted_acc_file = open(file_folder + 'unweighted_acc_' + file_ext + '.txt', 'w')
+    macro_acc_file = open(file_folder + 'macro_acc_' + file_ext + '.txt', 'w')
+    f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
+    macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
+    precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    global_protos = []
+    idxs_users = np.arange(args.num_users)
+
+    train_loss, train_accuracy = [], []
+    global_model = copy.deepcopy(local_model_list[0])
+    train_loss, train_accuracy = [], []
+    accuracies = []
+    f1_scores = []
+    recall_scores = []
+    precision_scores = []
+    f1_macros = []
+    acc_macros = []
+    fpr_scores = []
+    
+    local_weights_prev = []
+
+
+    for round in tqdm(range(args.rounds)):
+        print(f'\n | Global Training Round : {round} |\n')
+        local_weights, local_loss1, local_loss2, local_loss_total,  = [], [], [], []
+        idxs_users = np.arange(args.num_users)
+        for idx in idxs_users:
+            local_model = LocalUpdate(args=args, dataset=train_dataset_list, idx = idx, idxs=user_groups[idx], global_round=round)
+            w, w_urt, loss, protos = local_model.update_weights_fedpcl(args, idx, global_protos, global_avg_protos, backbone=backbone_list, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            agg_protos = agg_func(protos)
+            
+
+            local_weights.append(copy.deepcopy(w))
+            local_loss1.append(copy.deepcopy(loss['1']))
+            local_loss2.append(copy.deepcopy(loss['2']))
+            local_loss_total.append(copy.deepcopy(loss['total']))
+            #local_protos[idx] = copy.deepcopy(agg_protos)
+            local_protos[idx] = {k: copy.deepcopy(v.detach()) for k, v in agg_protos.items()}
+
+
+
+
+        for idx in idxs_users:
+            local_model_list[idx].load_state_dict(local_weights[idx])
+
+        # update global protos
+        global_avg_protos = proto_aggregation(local_protos)
+        global_protos = copy.deepcopy(local_protos)
+        loss_avg = sum(local_loss_total) / len(local_loss_total)
+        print('| Global Round : {} | Avg Loss: {:.3f}'.format(round, loss_avg))
+
+        acc, f1, precision, recall, acc_macro, f1_macro, loss = 0, 0, 0, 0, 0, 0, 0
+        acc_by_class_by_user = []
+        with torch.no_grad():
+            for idx in range(args.num_users):
+                print('Test on user {:d}'.format(idx))
+                local_test = LocalTest(args=args, dataset=test_dataset_list, idxs=user_groups_test[idx])
+                local_model_for_test = copy.deepcopy(local_model_list[idx])
+                local_model_for_test.load_state_dict(local_weights[idx], strict=True)
+                local_model_for_test.eval()
+                acc, loss = local_test.test_inference_twoway(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+                acc_, f1_, precision_, recall_, acc_macro_, f1_macro_, loss_, acc_by_class_  = local_test.test_inference_metrics(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+                acc += acc_/args.num_users
+                f1 += f1_/args.num_users
+                precision += precision_/args.num_users
+                recall += recall_/args.num_users
+                acc_macro += acc_macro_/args.num_users
+                f1_macro += f1_macro_/args.num_users
+                loss += loss_/args.num_users
+                acc_by_class_by_user.append(acc_by_class_)
+            print('test acc {:.5f}, test loss {:.5f}'.format(acc, loss))
+            #print('User {}, test acc {:.5f}, test loss {:.5f}'.format(idx, acc, loss))
+            accuracies.append(acc)
+            f1_scores.append(f1)
+            recall_scores.append(recall)
+            precision_scores.append(precision)
+            f1_macros.append(f1_macro)
+            acc_macros.append(acc_macro)
+        acc_mtx = torch.zeros([args.num_users])
+        loss_mtx = torch.zeros([args.num_users])
+    """with torch.no_grad():
+        for idx in range(args.num_users):
+            print('Test on user {:d}'.format(idx))
+            local_test = LocalTest(args = args, dataset = test_dataset_list, idxs = user_groups_test[idx])
+            local_model_for_test = copy.deepcopy(local_model_list[idx])
+            local_model_for_test.load_state_dict(local_weights[idx], strict=True)
+            local_model_for_test.eval()
+            acc, loss = local_test.test_inference_twoway(idx, args, global_avg_protos, local_protos[idx], backbone_list, local_model_for_test)
+            acc_mtx[idx] = acc
+            loss_mtx[idx] = loss"""
+
+    file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclient_byclass, 'w') as file:
+        file.write(str(acc_by_class_by_user))
+    file.close()
+
+    """file_acc_byclass = file_folder + 'acc_byclass_' + file_ext + '.txt'
+    with open(file_acc_byclass, 'w') as file:
+        file.write(str(acc_byclass))
+    file.close()"""
+
+    accuracies_file.write(str(accuracies))
+    f1_file.write(str(f1_scores))
+    macro_acc_file.write(str(acc_macros))
+    macro_f1_file.write(str(f1_macros))
+    precision_file.write(str(precision_scores))
+
+    # save protos
+    if args.dataset == 'mnist':
+        save_protos(args, local_model_list, test_dataset, user_groups_lt)
+    accuracies_file.close()
+    f1_file.close()
+    macro_acc_file.close()
+    macro_f1_file.close()
+    precision_file.close()
+    #recall_file.close()
+
+    acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
+    f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
+    macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
+    macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
+    precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+
+    return acc_mtx
+
+
+def Federated(args):
+    start_time = time.time()
+
+    
+    exp_details(args)
+
+    # set random seeds
+    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if args.device == 'cuda':
+        torch.cuda.set_device(args.gpu)
+        torch.cuda.manual_seed(args.seed)
+        torch.manual_seed(args.seed)
+    else:
+        torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if args.dataset == 'ciciot':
+        args.num_features = 46
+        args.num_classes = 8
+    elif args.dataset == 'xiiotid':
+        args.num_features = 74
+        args.num_classes = 9
+    elif args.dataset == '5gnidd':
+        args.num_features = 34
+        args.num_classes = 7
+    # load dataset and user groups
+    n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
+    print("n_list", n_list)
+    if args.dataset == 'mnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev - 1, args.num_users)
+    elif args.dataset == 'cifar10':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset =='cifar100':
+        k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
+    elif args.dataset == 'femnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    print("k_list", k_list)
+
+    train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+
+    # Build models
+    local_model_list = []
+    for i in range(args.num_users):
+        if args.dataset == 'mnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+
+            local_model = CNNMnist(args=args)
+
+        elif args.dataset == 'femnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+            local_model = CNNFemnist(args=args)
+
+        elif args.dataset == 'cifar100' or args.dataset == 'cifar10':
+            if args.mode == 'model_heter':
+                if i<10:
+                    args.stride = [1,4]
+                else:
+                    args.stride = [2,2]
+            else:
+                args.stride = [2, 2]
+            resnet = resnet18(args, pretrained=False, num_classes=args.num_classes)
+            initial_weight = model_zoo.load_url(model_urls['resnet18'])
+            local_model = resnet
+            initial_weight_1 = local_model.state_dict()
+            for key in initial_weight.keys():
+                if key[0:3] == 'fc.' or key[0:5]=='conv1' or key[0:3]=='bn1':
+                    initial_weight[key] = initial_weight_1[key]
+
+            local_model.load_state_dict(initial_weight)
+        elif args.dataset == 'ciciot':
+            args.num_features = 46
+            args.num_classes = 8
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'edgeiiot':
+            args.num_features = 97
+            args.num_classes = 15
+            local_model = EdgeCustomCNN(args=args)
+            global_model = EdgeCustomCNN(args=args)
+        elif args.dataset == 'xiiotid':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == '5gnidd':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        local_model.to(args.device)
+        local_model.train()
+        local_model_list.append(local_model)
+        global_model.to(args.device)
+        global_model.train()
+
+    unique_labels = set(range(args.num_classes))
+    # Save classes distribution between clients
+    classes_distribution = []
+    for idx, user in user_groups.items():
+        user_classes = {}
+        for data_idx in user:
+            label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+            if label not in user_classes:
+                user_classes[label] = 0
+            user_classes[label] += 1
+        classes_distribution.append((idx, user_classes))
+
+    # Print classes_distribution for debugging
+    print(classes_distribution)
+    
+    # Save classes distribution to a file
+    #file_path = '../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt'
+    #with open(file_path, 'w') as f:
+    file_folder = '../save_attack4/_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+
+    if not os.path.exists(file_folder):
+        os.makedirs(file_folder)
+    file_ext = '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + args.num_users 
+    #with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}_e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+    with open (file_folder + 'classes_distribution' + file_ext + '.txt', 'w') as f:
+        for idx, user_classes in classes_distribution:
+            f.write(f"User {idx}:\n")
+            for label, count in user_classes.items():
+                f.write(f"  Class {label}: {count} instances\n")
+            f.write("\n")
+
+
+    if args.alg == 'fedavg' or args.alg == 'fedprox':
+        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+    elif args.alg == 'fedproto':
+        aggregated = 'all_layers'
+        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+    elif args.alg == 'fedpcl':
+        backbone = Embedder(args)
+        local_model_list = [Proj(args=args) for i in range(args.num_users)]
+        acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+        print('For all users, mean of test acc is {:.5f}, std of test acc is {:.5f}'.format(np.mean(acc_mtx),np.std(acc_mtx))   )
+    elif args.alg == 'fedopt':
+        print('Not implemented yet')
+    else:
+        Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+
+if __name__ == '__main__':
+    start_time = time.time()
+
+    args = args_parser()
+    exp_details(args)
+    print (args)
+    print('already flipped', args.alr_flipped)
+    # set random seeds
+    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if args.device == 'cuda':
+        torch.cuda.set_device(args.gpu)
+        torch.cuda.manual_seed(args.seed)
+        torch.manual_seed(args.seed)
+    else:
+        torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if args.dataset == 'ciciot':
+        args.num_features = 46
+        args.num_classes = 8
+    elif args.dataset == 'xiiotid':
+        args.num_features = 74
+        args.num_classes = 9
+    elif args.dataset == '5gnidd':
+        args.num_features = 34
+        args.num_classes = 7
+        args.weighted_loss = True
+    elif args.dataset == 'cicids2017':
+        args.num_features = 81#77#81
+        args.num_classes = 25#11#25
+    # load dataset and user groups
+    n_list = np.random.randint(max(2, args.ways - args.stdev), min(args.num_classes, args.ways + args.stdev + 1), args.num_users)
+    print("n_list", n_list)
+    if args.dataset == 'mnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev - 1, args.num_users)
+    elif args.dataset == 'cifar10':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset =='cifar100':
+        k_list = np.random.randint(args.shots, args.shots + 1, args.num_users)
+    elif args.dataset == 'femnist':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    elif args.dataset == 'xiiotid' or args.dataset == 'ciciot' or args.dataset == '5gnidd' or args.dataset == 'cicids2017' or args.dataset == 'edgeiiot':
+        k_list = np.random.randint(args.shots - args.stdev + 1 , args.shots + args.stdev + 1, args.num_users)
+    print("k_list", k_list)
+
+    #train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+
+    # Build models
+    local_model_list = []
+    for i in range(args.num_users):
+        if args.dataset == 'mnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+
+            local_model = CNNMnist(args=args)
+
+        elif args.dataset == 'femnist':
+            if args.mode == 'model_heter':
+                if i<7:
+                    args.out_channels = 18
+                elif i>=7 and i<14:
+                    args.out_channels = 20
+                else:
+                    args.out_channels = 22
+            else:
+                args.out_channels = 20
+            local_model = CNNFemnist(args=args)
+
+        elif args.dataset == 'cifar100' or args.dataset == 'cifar10':
+            if args.mode == 'model_heter':
+                if i<10:
+                    args.stride = [1,4]
+                else:
+                    args.stride = [2,2]
+            else:
+                args.stride = [2, 2]
+            resnet = resnet18(args, pretrained=False, num_classes=args.num_classes)
+            initial_weight = model_zoo.load_url(model_urls['resnet18'])
+            local_model = resnet
+            initial_weight_1 = local_model.state_dict()
+            for key in initial_weight.keys():
+                if key[0:3] == 'fc.' or key[0:5]=='conv1' or key[0:3]=='bn1':
+                    initial_weight[key] = initial_weight_1[key]
+
+            local_model.load_state_dict(initial_weight)
+        elif args.dataset == 'ciciot':
+            args.num_features = 46
+            args.num_classes = 8
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'edgeiiot':
+            args.num_features = 97
+            args.num_classes = 15
+            local_model = EdgeCustomCNN(args=args)
+            global_model = EdgeCustomCNN(args=args)
+        elif args.dataset == 'xiiotid':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == '5gnidd':
+            local_model = CustomCNN(args=args)
+            global_model = CustomCNN(args=args)
+        elif args.dataset == 'cicids2017':
+            local_model = DenseModel(args=args)
+            global_model = DenseModel(args=args)
+        local_model.to(args.device)
+        local_model.train()
+        local_model_list.append(local_model)
+        global_model.to(args.device)
+        global_model.train()
+    if args.dataset == 'edgeiiot':
+        args.local_bs = 256
+        args.lr = 0.001
+        args.criterion = 'cross_entropy'
+    elif args.dataset == 'cicids2017':
+        args.local_bs = 256
+        args.lr = 0.001
+        args.criterion = 'cross_entropy'
+    unique_labels = set(range(args.num_classes))
+    # Save classes distribution between clients
+    """classes_distribution = []
+    for idx, user in user_groups.items():
+        user_classes = {}
+        for data_idx in user:
+            label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+            if label not in user_classes:
+                user_classes[label] = 0
+            user_classes[label] += 1
+        classes_distribution.append((idx, user_classes))"""
+
+    # Print classes_distribution for debugging
+    """print(classes_distribution)
+    for alpha in [0.75]#, 0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:
+        args.alpha =alpha
+        args.alg = 'fedproto'
+        aggregated = 'none'
+        FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                
+        #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+        if args.alg != 'beforefl':
+            file_folder_before = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+            file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            file_name_before_fl = file_folder_before + file_ext + '.txt'
+            file_folder_after = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+            file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+            file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+            #file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+            #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            #output_file_name = file_folder + file_ext + '.pdf'
+
+            plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)            """
+    
+    # Save classes distribution to a file
+    #file_path = '../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}e_{args.num_users}u.txt'
+    #with open(file_path, 'w') as f:
+    """with open(f'../save/classes_distribution_{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}_e_{args.num_users}u_{time.time()}.txt', 'w') as f:    
+        for idx, user_classes in classes_distribution:
+            f.write(f"User {idx}:\n")
+            for label, count in user_classes.items():
+                f.write(f"  Class {label}: {count} instances\n")
+            f.write("\n")"""
+    args.attack_type = 'label-flipping'
+    
+    args.alr_flipped = "False"
+    args.flip_ratio = 0.1
+
+    for alpha in [0.75,0.5,0.25]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+        if alpha == 0.75:
+            excluded = [0,1,7]
+        elif alpha == 0.5:
+            excluded = [0,1,9]
+        elif alpha == 0.25:
+            excluded = [1,3,5]
+        args.alpha = alpha
+        if args.dataset =='5gnidd':
+            excluded = []
+        if args.num_users > 3:
+            num_selected_clients = 5
+        else:
+            num_selected_clients = args.num_users
+        all_clients = [client for client in range(args.num_users) if client not in excluded]
+
+        random_clients = random.sample(all_clients, num_selected_clients)
+        for attacker in random_clients:
+            args.num_attacker = [attacker]
+            train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+
+
+            args.alr_flipped = "False"
+            train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+            unique_labels = set(range(args.num_classes))
+            # Save classes distribution between clients
+            classes_distribution = []
+            for idx, user in user_groups.items():
+                user_classes = {}
+                for data_idx in user:
+                    label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+                    if label not in user_classes:
+                        user_classes[label] = 0
+                    user_classes[label] += 1
+                classes_distribution.append((idx, user_classes))
+
+            # Print classes_distribution for debugging
+            print(classes_distribution)
+            file_folder = '../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)
+            
+            file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            if not os.path.exists('../save_attack4'):
+                os.makedirs('../save_attack4')
+            if not os.path.exists('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) ):
+                os.makedirs('../save_attack4/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) )
+            if not os.path.exists(file_folder):
+                os.makedirs(file_folder)
+            with open (file_folder + 'classes_distribution_' + file_ext + '.txt', 'w') as f:
+                for idx, user_classes in classes_distribution:
+                    f.write(f"User {idx}:\n")
+                    for label, count in user_classes.items():
+                        f.write(f"  Class {label}: {count} instances\n")
+                    f.write("\n")
+            
+            for alg in ['fedproto', 'multi_krum']:#'beforefl','fedproto','fedprox','fedavg']:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+                args.alg = alg
+                classic_eval = True
+                
+                """for outlier_type in ['intra']:#[ 'multi_krum']: #'intra', 'inter_distance', 'inter_forest', 
+                    args.outlier_type = outlier_type"""
+
+
+                print('*****************************Running algorithm********************************: ', args.alg)
+                if args.alg == 'fedavg' or args.alg == 'fedprox':
+                    print('Running federated averaging')
+                    if args.dataset == 'cicids2017':
+                        global_model = DenseModel(args)
+                    elif args.dataset == 'edgeiiot':
+                        global_model = EdgeCustomCNN(args)
+                    else:
+                        global_model = CustomCNN(args)
+                    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                elif args.alg == 'fedproto':
+                    args.eliminate_outlier = True
+                    args.outlier_type = 'intra'
+                    aggregated = 'all_layers' #'none'#'mapping_layers' #
+                    if args.dataset == 'cicids2017':
+                        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+                    elif args.dataset == 'edgeiiot':
+                        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+                    else:
+                        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                elif args.alg == 'fedpcl':
+                    backbone = Embedder(args)
+                    local_model_list = [Proj(args=args) for i in range(args.num_users)]
+                    acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+                    acc_mean = acc_mtx.mean().item()
+                    acc_std = acc_mtx.std().item()
+                    print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
+
+                elif args.alg == 'fedopt':
+                    print('Not implemented yet')
+                elif args.alg == 'beforefl':
+                    acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                else:
+                    if args.dataset == 'cicids2017':
+                        global_model = DenseModel(args)
+                    elif args.dataset == 'edgeiiot':
+                        global_model = EdgeCustomCNN(args)
+                    else:
+                        global_model = CustomCNN(args)
+                    args.outlier_type = 'none'
+                    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                

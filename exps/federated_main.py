@@ -107,7 +107,10 @@ def average_weights_shared(local_weights, is_on_server):
 def before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt):
     accs, losses, f1_scores, precision_scores, f1_macros, acc_macros = [], [], [], [], [], []
     if args.attack_type == 'none':
-        file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+        if args.diff_privacy:
+            file_folder = '../save2_var_'+str(args.variance)+'/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+        else:
+            file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
     else:
         file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
     if not os.path.exists(file_folder):
@@ -828,40 +831,110 @@ def aggregate_mapping_layers(local_weights):
         updated_weights_list.append(client_updated_weights)
     
     return updated_weights_list
+import math
+import numpy as np
+import torch
 
 def apply_dp_to_protos(args, protos):
-        """
-        Applies Differential Privacy to the prototypes by clipping and adding Gaussian noise.
+    """
+    Applies Differential Privacy to the prototypes by clipping and adding Gaussian noise.
+    
+    Instead of using a predefined clipping threshold, this function determines
+    the normal range of each prototype by computing its lower (min) and upper (max)
+    element values. These bounds are then used to clip the noisy prototypes.
+    
+    Args:
+        protos (dict): Dictionary of class prototypes (each is a torch.Tensor).
+        args: An object (or argument parser) with DP parameters containing:
+              - epsilon: Privacy budget.
+              - delta: Failure probability.
+              - device: The torch device (e.g., 'cpu' or 'cuda').
+    
+    Returns:
+        dict: Dictionary of differentially private (noisy) prototypes.
+    """
+    print('Applying Differential Privacy to Prototypes...')
+    dp_protos = {}
+    epsilon = args.epsilon
+    delta = args.delta
 
-        Args:
-            protos (dict): Dictionary of class prototypes.
-            args: Argument parser with DP parameters.
+    # Compute the noise scale sigma using the (ε, δ)-DP Gaussian mechanism formula.
+    # Here we use a basic form that does not incorporate a clip threshold since
+    # the sensitivity will be implicitly bounded by the range of the prototype.
+    #sigma = (np.sqrt(2 * np.log(1.25 / delta))) / epsilon
+    sigma = np.sqrt(args.variance)
 
-        Returns:
-            dict: Noisy prototypes.
-        """
-        print('Applying Differential Privacy to Prototypes...')
-        dp_protos = {}
-        epsilon = args.epsilon
-        delta = args.delta
-        clip_threshold = args.clip_threshold
+    for cls, proto in protos.items():
+        # Determine the "normal" range for this prototype.
+        # We assume each prototype is a tensor; its min and max element values define the range.
+        """lower_bound = torch.min(proto)
+        upper_bound = torch.max(proto)
+        print(f'Class {cls}: Lower Bound = {lower_bound}, Upper Bound = {upper_bound}')"""
 
-        # Calculate noise scale (sigma) for Gaussian Mechanism
-        sigma = (clip_threshold * math.sqrt(2 * math.log(1.25 / delta))) / epsilon
+        # Add Gaussian noise to the prototype.
+        noise = torch.normal(mean=0, std=sigma, size=proto.shape).to(args.device)
+        noisy_proto = proto + noise
 
-        for cls, proto in protos.items():
-            # Clip the prototype to bound sensitivity
-            proto_norm = torch.norm(proto, p=2)
-            if proto_norm > clip_threshold:
-                proto = proto * (clip_threshold / proto_norm)
+        # Clip the noisy prototype element-wise so that its values lie within
+        # the original prototype's min and max (i.e., its normal range).
+        #noisy_proto = torch.clamp(noisy_proto, min=lower_bound.item(), max=upper_bound.item())
+        noisy_proto = torch.clamp(noisy_proto, min=0, max=args.clip_threshold)
 
-            # Add Gaussian noise
-            noise = torch.normal(0, sigma, size=proto.shape).to(args.device)
-            noisy_proto = proto + noise
+        dp_protos[cls] = noisy_proto
 
-            dp_protos[cls] = noisy_proto
+    return dp_protos
 
-        return dp_protos
+def apply_dp_to_model(args, model):
+    """
+    Applies Differential Privacy to the model parameters by clipping and adding Gaussian noise.
+
+    This function iterates over the model's parameters and, for each parameter tensor:
+      1. Clips its values element-wise between -clip_threshold and +clip_threshold.
+      2. Adds Gaussian noise with a standard deviation determined by args.variance.
+
+    Args:
+        model (torch.nn.Module): The PyTorch model whose parameters are to be modified.
+        args: An object (or argument parser) with DP parameters containing:
+              - variance: The variance of the Gaussian noise (we use sqrt(variance) as sigma).
+              - clip_threshold: The value at which to clip the parameters.
+              - device: The torch device (e.g., 'cpu' or 'cuda').
+
+    Returns:
+        torch.nn.Module: The model with DP-modified parameters.
+    """
+    print('Applying Differential Privacy to Model Parameters...')
+    sigma = np.sqrt(args.variance)
+
+    # Iterate over each parameter in the model.
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            """data = param.data
+            param_min = data.min().item()
+            param_max = data.max().item()
+            param_mean = data.mean().item()
+            param_std = data.std().item()
+            print(f"Parameter: {name}")
+            print(f"  Shape: {data.shape}")
+            print(f"  Min: {param_min:.4f}, Max: {param_max:.4f}")
+            print(f"  Mean: {param_mean:.4f}, Std: {param_std:.4f}\n")"""
+            
+            # Create Gaussian noise with the same shape as the parameter.
+            noise = torch.normal(mean=0, std=sigma, size=param.data.size()).to(args.device)
+            
+            # Add the noise to the parameter.
+            param.data = param.data + noise
+
+            # Clip the parameter values element-wise.
+            param.data = torch.clamp(param.data, min=-args.clip_threshold, max=args.clip_threshold)
+
+            # Optional: Print or log the parameter name and stats for debugging.
+            # print(f'{name}: mean={param.data.mean()}, std={param.data.std()}')
+    model = model.to(args.device)
+
+    return model
+
+
+
 
 def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list, aggregated = 'none', classes_distribution=None):
     summary_writer = SummaryWriter('../tensorboard/'+ args.dataset +'_fedproto_' + str(args.ways) + 'w' + str(args.shots) + 's' + str(args.stdev) + 'e_' + str(args.num_users) + 'u_' + str(args.rounds) + 'r')
@@ -883,7 +956,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     else:
         print('Folder exists')
     if args.attack_type == 'none':
-        file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+        if args.diff_privacy:
+            file_folder = '../save2_var_'+str(args.variance)+'/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+        else:
+            file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
     else:
         file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/' + args.alg + '/'
     if not os.path.exists(file_folder):
@@ -897,6 +973,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     f1_file = open(file_folder + 'f1_' + file_ext + '.txt', 'w')
     macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
     precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
+    recall_file = open(file_folder + 'recall_' + file_ext + '.txt', 'w')
     reconstruction_loss_file = file_folder + 'reconstruction_loss_' + file_ext + '.txt'
     baseline_loss_file = file_folder + 'baseline_loss_' + file_ext + '.txt'
     outlier_file = file_folder + 'outlier_' + args.outlier_type + '_eliminated_' + str(args.eliminate_outlier) +'_attacker' + str(args.num_attacker) + '_' + file_ext + '.txt'
@@ -940,9 +1017,11 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             w, loss, acc, protos = local_model.update_weights_het_prox_weighted(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
 
             agg_protos = agg_func(protos)
+            
+            local_model_list[idx].load_state_dict(copy.deepcopy(w))
             if args.diff_privacy:
                 agg_protos = apply_dp_to_protos(args, agg_protos)
-            local_model_list[idx].load_state_dict(copy.deepcopy(w))
+                local_model_list[idx] = apply_dp_to_model(args, local_model_list[idx])
 
 
             local_weights.append(copy.deepcopy(w))
@@ -1215,6 +1294,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     macro_acc_file.write(str(acc_macros))
     macro_f1_file.write(str(f1_macros))
     precision_file.write(str(precision_scores))
+    recall_file.write(str(recall_scores))
 
     # save protos
     if args.dataset == 'mnist':
@@ -1224,15 +1304,16 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     macro_acc_file.close()
     macro_f1_file.close()
     precision_file.close()
-    #recall_file.close()
+    recall_file.close()
 
     acc_file_name = file_folder + 'acc_' + file_ext + '.txt'
     f1_file_name = file_folder + 'f1_' + file_ext + '.txt'
     macro_acc_file_name = file_folder + 'macro_acc_' + file_ext + '.txt'
     macro_f1_file_name = file_folder + 'macro_f1_' + file_ext + '.txt'
     precision_file_name = file_folder + 'precision_' + file_ext + '.txt'
+    recall_file_name = file_folder + 'recall_' + file_ext + '.txt'
     output_file_name = file_folder + 'metrics_plot_' + file_ext + '.pdf'
-    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name, output_file_name)
+    plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name ,precision_file_name,recall_file_name, output_file_name)
     #accuracies_file_wo.write('\n')
     #accuracies_file_w.write('\n')
     """for label in range(args.num_classes):
@@ -1622,7 +1703,8 @@ if __name__ == '__main__':
     print (args)
     print('already flipped', args.alr_flipped)
     # set random seeds
-    args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    args.device = 'cpu'
     if args.device == 'cuda':
         torch.cuda.set_device(args.gpu)
         torch.cuda.manual_seed(args.seed)
@@ -1782,141 +1864,152 @@ if __name__ == '__main__':
             for label, count in user_classes.items():
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
-            
-    for alpha in [0.75,0.5,0.25]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
-        args.alpha = alpha
-        args.alr_flipped = "False"
-        train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
-        unique_labels = set(range(args.num_classes))
-        # Save classes distribution between clients
-        classes_distribution = []
-        for idx, user in user_groups.items():
-            user_classes = {}
-            for data_idx in user:
-                label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
-                if label not in user_classes:
-                    user_classes[label] = 0
-                user_classes[label] += 1
-            classes_distribution.append((idx, user_classes))
+    for var in [10.0,1.0,0.1,0.01,0.001]:     
+        args.variance = var   
+        for alpha in [0.75,0.5,0.25]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
+            args.alpha = alpha
+            args.alr_flipped = "False"
+            train_dataset, test_dataset, user_groups, user_groups_lt, classes_list, classes_list_gt = get_dataset(args, n_list, k_list)
+            unique_labels = set(range(args.num_classes))
+            # Save classes distribution between clients
+            classes_distribution = []
+            for idx, user in user_groups.items():
+                user_classes = {}
+                for data_idx in user:
+                    label = train_dataset[int(data_idx)][1].item()  # Get the label for the data index
+                    if label not in user_classes:
+                        user_classes[label] = 0
+                    user_classes[label] += 1
+                classes_distribution.append((idx, user_classes))
 
-        # Print classes_distribution for debugging
-        print(classes_distribution)
-        if args.attack_type == 'none':
-            file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)
-        else:
-            file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)
-        
-        file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-        if not os.path.exists('../save_attack'):
-            os.makedirs('../save_attack')
-        if not os.path.exists('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) ):
-            os.makedirs('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) )
-        if not os.path.exists(file_folder):
-            os.makedirs(file_folder)
-        with open (file_folder + 'classes_distribution_' + file_ext + '.txt', 'w') as f:
-            for idx, user_classes in classes_distribution:
-                f.write(f"User {idx}:\n")
-                for label, count in user_classes.items():
-                    f.write(f"  Class {label}: {count} instances\n")
-                f.write("\n")
-        
-
-        """for alg in ['beforefl', 'fedavg', 'krum', 'median','trimmed_mean','fedprox']:#['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-            args.alg = alg
-            args.attack_type = 'label-flipping'
-            for attack_perc in [0.25,0.5,0.75]:
-                args.flip_ratio = attack_perc
-                for attackers in [2,6]:
-                    args.num_attackers = attackers"""
-        #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['beforefl','fedproto','fedprox','fedavg']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
-            args.alg = alg
-            classic_eval = True
-            args.attack_type = 'none'
-            #args.proto_robust = True
-            """args.attack_type = 'label-flipping'
-            for attack_perc in [0.1, 0.2,0.3,0.4,0.5]:#,0.5,0.75]:
-                args.flip_ratio = attack_perc
-                print('*****************************flip ratio********************************: ', args.flip_ratio)
-                if args.alpha == 0.75:
-                    attackers_ = [3]
-                elif args.alpha == 0.5:
-                    attackers_ = [2]
-                elif args.alpha == 0.25:
-                    attackers _= [9]
-                for attackers in attackers_:#,6]:
-                    #args.num_attackers = attackers
-                    args.num_attacker = attackers
-                    
-                    args.eliminate_outlier = True
-                    for outlier_type in [ 'intra', 'inter_distance', 'inter_forest','multi_krum']: #'intra', 'inter_distance', 'inter_forest', 
-                        args.outlier_type = outlier_type"""
-
-
-            print('*****************************Running algorithm********************************: ', args.alg)
-            if args.alg == 'fedavg' or args.alg == 'fedprox':
-                print('Running federated averaging')
-                if args.dataset == 'cicids2017':
-                    global_model = DenseModel(args)
-                elif args.dataset == 'edgeiiot':
-                    global_model = EdgeCustomCNN(args)
+            # Print classes_distribution for debugging
+            print(classes_distribution)
+            if args.attack_type == 'none':
+                if args.diff_privacy:
+                    file_folder = '../save2_var_'+str(args.variance)+'/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) 
                 else:
-                    global_model = CustomCNN(args)
-                Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-            elif args.alg == 'fedproto':
-                aggregated = 'all_layers' #'none'#'mapping_layers' #
-                if args.dataset == 'cicids2017':
-                    local_model_list = [DenseModel(args) for i in range(args.num_users)]
-                elif args.dataset == 'edgeiiot':
-                    local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
-                else:
-                    local_model_list = [CustomCNN(args) for i in range(args.num_users)]
-                FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
-            elif args.alg == 'fedpcl':
-                backbone = Embedder(args)
-                local_model_list = [Proj(args=args) for i in range(args.num_users)]
-                acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
-                acc_mean = acc_mtx.mean().item()
-                acc_std = acc_mtx.std().item()
-                print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
-
-            elif args.alg == 'fedopt':
-                print('Not implemented yet')
-            elif args.alg == 'beforefl':
-                acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                    file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)
             else:
-                if args.dataset == 'cicids2017':
-                    global_model = DenseModel(args)
-                elif args.dataset == 'edgeiiot':
-                    global_model = EdgeCustomCNN(args)
-                else:
-                    global_model = CustomCNN(args)
-                Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                file_folder = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)
             
-            #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
-            if args.alg != 'beforefl':
-                if args.attack_type == 'none':
-                    file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
-                else:
-                    file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
-                file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                file_name_before_fl = file_folder_before + file_ext + '.txt'
-                if args.attack_type == 'none':
-                    file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
-                else:
-                    file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
-                #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                print('file_ext_after: ', file_ext_after)
-                file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
-                #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
-                #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
-                #output_file_name = file_folder + file_ext + '.pdf'
+            file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+            if not os.path.exists('../save_attack'):
+                os.makedirs('../save_attack')
+            if not os.path.exists('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) ):
+                os.makedirs('../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) )
+            if not os.path.exists(file_folder):
+                os.makedirs(file_folder)
+            with open (file_folder + 'classes_distribution_' + file_ext + '.txt', 'w') as f:
+                for idx, user_classes in classes_distribution:
+                    f.write(f"User {idx}:\n")
+                    for label, count in user_classes.items():
+                        f.write(f"  Class {label}: {count} instances\n")
+                    f.write("\n")
+            
 
-                plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
-                file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
-                file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
-                #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
-                if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
+            """for alg in ['beforefl', 'fedavg', 'krum', 'median','trimmed_mean','fedprox']:#['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
+                args.alg = alg
+                args.attack_type = 'label-flipping'
+                for attack_perc in [0.25,0.5,0.75]:
+                    args.flip_ratio = attack_perc
+                    for attackers in [2,6]:
+                        args.num_attackers = attackers"""
+            #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
+            for alg in ['beforefl','fedproto']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+                args.alg = alg
+                classic_eval = True
+                args.attack_type = 'none'
+                #args.proto_robust = True
+                """args.attack_type = 'label-flipping'
+                for attack_perc in [0.1, 0.2,0.3,0.4,0.5]:#,0.5,0.75]:
+                    args.flip_ratio = attack_perc
+                    print('*****************************flip ratio********************************: ', args.flip_ratio)
+                    if args.alpha == 0.75:
+                        attackers_ = [3]
+                    elif args.alpha == 0.5:
+                        attackers_ = [2]
+                    elif args.alpha == 0.25:
+                        attackers _= [9]
+                    for attackers in attackers_:#,6]:
+                        #args.num_attackers = attackers
+                        args.num_attacker = attackers
+                        
+                        args.eliminate_outlier = True
+                        for outlier_type in [ 'intra', 'inter_distance', 'inter_forest','multi_krum']: #'intra', 'inter_distance', 'inter_forest', 
+                            args.outlier_type = outlier_type"""
+
+
+                print('*****************************Running algorithm********************************: ', args.alg)
+                if args.alg == 'fedavg' or args.alg == 'fedprox':
+                    print('Running federated averaging')
+                    if args.dataset == 'cicids2017':
+                        global_model = DenseModel(args)
+                    elif args.dataset == 'edgeiiot':
+                        global_model = EdgeCustomCNN(args)
+                    else:
+                        global_model = CustomCNN(args)
+                    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                elif args.alg == 'fedproto':
+                    aggregated = 'all_layers' #'none'#'mapping_layers' #
+                    if args.dataset == 'cicids2017':
+                        local_model_list = [DenseModel(args) for i in range(args.num_users)]
+                    elif args.dataset == 'edgeiiot':
+                        local_model_list = [EdgeCustomCNN(args) for i in range(args.num_users)]
+                    else:
+                        local_model_list = [CustomCNN(args) for i in range(args.num_users)]
+                    FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_groups_lt, local_model_list, classes_list,aggregated, classes_distribution)
+                elif args.alg == 'fedpcl':
+                    backbone = Embedder(args)
+                    local_model_list = [Proj(args=args) for i in range(args.num_users)]
+                    acc_mtx = FedPCL(args, train_dataset, test_dataset, user_groups, user_groups_lt, backbone, local_model_list)
+                    acc_mean = acc_mtx.mean().item()
+                    acc_std = acc_mtx.std().item()
+                    print(f'For all users, mean of test acc is {acc_mean:.5f}, std of test acc is {acc_std:.5f}')
+
+                elif args.alg == 'fedopt':
+                    print('Not implemented yet')
+                elif args.alg == 'beforefl':
+                    acc_mtx = before_fl(args, train_dataset, test_dataset, user_groups, user_groups_lt)
+                else:
+                    if args.dataset == 'cicids2017':
+                        global_model = DenseModel(args)
+                    elif args.dataset == 'edgeiiot':
+                        global_model = EdgeCustomCNN(args)
+                    else:
+                        global_model = CustomCNN(args)
+                    Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
                 
-                    plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)
+                #Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
+                if args.alg != 'beforefl':
+                    if args.attack_type == 'none':
+                        if args.diff_privacy:
+                            file_folder_before = '../save2_var_'+str(args.variance)+'/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+                        else:
+                            file_folder_before = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/before_fl/'
+                        
+                    else:
+                        file_folder_before = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+'/before_fl/' 
+                    file_ext = 'acc_byclient_byclass_before_fl_'+'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                    file_name_before_fl = file_folder_before + file_ext + '.txt'
+                    if args.attack_type == 'none':
+                        if args.diff_privacy:
+                            file_folder_after = '../save2_var_'+str(args.variance)+'/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                        else:
+                            file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users)+ '/' + args.alg + '/'
+                    else:
+                        file_folder_after = '../save_attack/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/_num_attackers'+str(args.num_attackers)+'_ratio'+str(args.flip_ratio)+ '/' + args.alg + '/'
+                    #file_folder_after = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                    file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                    print('file_ext_after: ', file_ext_after)
+                    file_name_after_fl = file_folder_after + 'acc_byclient_byclass_' + file_ext_after + '.txt'
+                    #file_folder = '../save2/_alpha' + str(args.alpha) +  '_num_users' + str(args.num_users) + '/' + args.alg + '/'
+                    #file_ext = 'acc_comparaision_' + 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_num_users' + str(args.num_users) #+ '_timestamp' + str(time.time())
+                    #output_file_name = file_folder + file_ext + '.pdf'
+
+                    plot_accuracy_comparison(args, file_name_before_fl, file_name_after_fl)
+                    file_ext_after = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg + '_num_users' + str(args.num_users)
+                    file_name_after_fl = file_folder_after + 'acc_byclass_' + file_ext_after + '.txt'
+                    #output_file_name = file_folder + +'_global_' + file_ext + '.pdf'
+                    if os.path.exists(file_name_after_fl): # args.alg != 'fedproto' and args.alg != 'fedpcl':
+                    
+                        plot_accuracy_comparison_global(args, file_name_before_fl, file_name_after_fl)
