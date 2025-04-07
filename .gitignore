@@ -8,4 +8,5 @@ save2/
 *.pdf
 *.txt
 data/
+**/__pycache__/
 
