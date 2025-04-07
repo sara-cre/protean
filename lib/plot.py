@@ -27,7 +27,7 @@ def plot_fl_accuracies(file_path):
     save_path = os.path.join("../save", f"figure_{base_name}.pdf")
     plt.savefig(save_path)
 
-def plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name, precision_file_name, output_file_name):
+def plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file_name, precision_file_name, recall_file_name, output_file_name):
 
     # Reading accuracies from the file
     with open(acc_file_name, 'r') as file:
@@ -48,25 +48,32 @@ def plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file
     with open(precision_file_name, 'r') as file:
         # Assume the file contains one line with a list of F1 scores
         precision_scores = ast.literal_eval(file.readline().strip())
+    with open(recall_file_name, 'r') as file:
+        # Assume the file contains one line with a list of F1 scores
+        recall_scores = ast.literal_eval(file.readline().strip())
     # Generating round numbers
     rounds = list(range(1, len(accuracies) + 1))
     # Plotting
     plt.figure(figsize=(10, 6))
+    # Increase font sizes
+    plt.rcParams.update({'font.size': 16}) 
     plt.plot(rounds, accuracies, marker='o', linestyle='-', color='b', label='Accuracy')
     plt.plot(rounds, f1_scores, marker='o', linestyle='-', color='r', label='F1 Score')
     plt.plot(rounds, macro_accuracies, marker='o', linestyle='-', color='g', label='Macro Accuracy')
     #plt.plot(rounds, macro_f1_scores, marker='o', linestyle='-', color='m', label='Macro F1 Score')
     plt.plot(rounds, precision_scores, marker='o', linestyle='-', color='y', label='Precision Score')
+    plt.plot(rounds, recall_scores, marker='o', linestyle='-', color='c', label='Recall Score')
     plt.ylim(0, 1)
     plt.xlabel('Round')
-    plt.ylabel('Metric')
-    plt.title('Metrics by Round')
+    plt.ylabel('')#('Metric')
+    #plt.title('Metrics by Round')
     plt.xticks(rounds)  # Ensuring x-axis has integer ticks for each round
     plt.legend()  
     plt.grid(True)
     #plt.show()
     # creating the output file
-    
+    # Adjust layout to remove white space
+    plt.tight_layout()
     plt.savefig(output_file_name)
     
 def plot_accuracy_comparison(args, before_file, after_file):

@@ -102,10 +102,11 @@ def args_parser():
     parser.add_argument('--dp', type=bool, default=False, help='differential privacy')
 
     parser.add_argument('--diff_privacy', type=bool, default=False, help='differential privacy')
-    parser.add_argument('--epsilon', type=float, default=10, help='differential privacy epsilon')
+    parser.add_argument('--epsilon', type=float, default=5, help='differential privacy epsilon')
     parser.add_argument('--delta', type=float, default=1e-3, help='differential privacy delta')
-    parser.add_argument('--clip_threshold', type=float, default=5.0, help='Clipping threshold for prototypes')
-    
+    parser.add_argument('--clip_threshold', type=float, default=15.0, help='Clipping threshold for prototypes')
+    parser.add_argument('--variance', type=float, default=0.1, help='noise variance for differential privacy')
+
     parser.add_argument('--mu', type=float, default=0.1, help='mu for fedprox')
     args = parser.parse_args()
     return args
