@@ -645,13 +645,15 @@ class LocalUpdate(object):
 
         return model.state_dict(), epoch_loss, acc_val.item(), agg_protos_label
 
-    def update_weights_moon(self, args, idx, global_protos, model, global_round=round):
+    def update_weights_moon(self, args, idx, global_protos, model, previous_models, global_round=round):
         # Set mode to train model
         mu = 1.0
         global_model = copy.deepcopy(model)
         model.train()
         epoch_loss = {'total':[],'1':[], '2':[], '3':[]}
-
+        cos=torch.nn.CosineSimilarity(dim=-1)
+        temperature = 0.5
+        cross_entropy_criterion = nn.CrossEntropyLoss()
         # Set optimizer for the local updates
         if self.args.optimizer == 'sgd':
             optimizer = torch.optim.SGD(model.parameters(), lr=self.args.lr,
@@ -671,19 +673,29 @@ class LocalUpdate(object):
                 #print(f"Batch {batch_idx} - labels shape: {labels.shape}")
                 # loss1: cross-entrophy loss, loss2: proto distance loss
                 model.zero_grad()
+                optimizer.zero_grad()
                 images.requires_grad = False
                 labels.requires_grad = False
+                labels = labels.long()
                 log_probs, protos = model(images)
                 log_probs_g, protos_g = global_model(images)
                 posi = cos(protos, protos_g)    
                 logits = posi.reshape(-1,1)
-                for net in previous_models:
+                """for net in previous_models:
                     log_probs_net, protos_net = net(images)
                     nega = cos(protos, protos_net)
-                    logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)
+                    logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)"""
+                
+                log_probs_net, protos_net = previous_models(images)
+                nega = cos(protos, protos_net)
+                logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)
+            
                 logits /= temperature
-                x = torch.zeros(images.size(0)).cuda().long()
-                loss2 = mu * self.criterion(logits, x)
+                x = torch.zeros(images.size(0)).long()
+                x = x.to(logits.device)
+
+                
+                loss2 = mu * cross_entropy_criterion(logits, x)
                 loss1 = self.criterion(log_probs, labels)
                 loss = loss1 + loss2 
 
@@ -714,7 +726,7 @@ class LocalUpdate(object):
                         loss.item(),
                         acc_val.item()))"""
                     print(f"| Global Round: {global_round} | User: {idx} | Epoch: {iter} | [{batch_idx * len(images)}/{len(self.trainloader.dataset)} ({100. * batch_idx / len(self.trainloader):.0f}%)] "
-                        f"| Loss1: {loss1.item():.3f} | Loss2: {loss2.item():.3f} | LossProx: {loss_prox.item():.3f} | Combined: {loss.item():.3f} | Acc: {acc_val.item():.3f}")
+                        f"| Loss1: {loss1.item():.3f} | Loss2: {loss2.item():.3f}  | Combined: {loss.item():.3f} | Acc: {acc_val.item():.3f}")
 
                 batch_loss['total'].append(loss.item())
                 batch_loss['1'].append(loss1.item())
