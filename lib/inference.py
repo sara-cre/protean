@@ -263,60 +263,60 @@ from sklearn.metrics import mean_squared_error
 
 import torch
 
-def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label,idxs):
-    
-    # Efficient filtering
-    
-    train_dataset =  DatasetSplit(train_dataset, idxs)
-    train_dataset_filtered = [images for images, labels in train_dataset if labels.item() == label]
-    
-    # Stack images into a single tensor and compute the average
-    if len(train_dataset_filtered) > 0:
-        X_original = torch.stack(train_dataset_filtered).mean(dim=0)
-    else:
-        raise ValueError(f"No images found for label {label}")
-    
-    # Ensure reconstructed_inputs has the same shape as X_original
+def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label, idxs):
+    """
+    Evaluate reconstruction quality on tabular data using:
+      - Squared L2 Distance
+      - Mean Squared Error (MSE)
+      - PSNR (adapted)
+      - SSIM (adapted)
+    """
+    # 1) Filter to the given label and compute the class prototype
+    train_subset = DatasetSplit(train_dataset, idxs)
+    filtered = [data for data, lbl in train_subset if lbl.item() == label]
+    if not filtered:
+        raise ValueError(f"No records found for label {label}")
+    X_original = torch.stack(filtered).mean(dim=0)
+
+    # 2) Shape check
     if reconstructed_inputs.shape != X_original.shape:
         raise ValueError("Shape mismatch between reconstructed inputs and original data.")
-    
-    # Compute the squared L2 distance
+
+    # 3) Squared L2 and MSE
     squared_l2_distance = torch.norm(reconstructed_inputs - X_original) ** 2
-    mse = mean_squared_error(X_original, reconstructed_inputs)
+    mse = torch.mean((reconstructed_inputs - X_original) ** 2).item()
+    print(f"Class {label}: Squared L2 Distance = {squared_l2_distance.item():.4f}, MSE = {mse:.4f}")
 
-    print(f"Class {label}: Squared L2 Distance = {squared_l2_distance.item():.4f}", f"MSE = {mse:.4f}")
+    # 4) Compute data range (max - min) from the original prototype
+    orig_max = X_original.max().item()
+    orig_min = X_original.min().item()
+    data_range = orig_max - orig_min
+    if data_range == 0:
+        # degenerate case: constant data
+        psnr_value = float('inf')
+        ssim_value = 1.0
+        print(f"PSNR = {psnr_value}, SSIM = {ssim_value}")
+        return mse, psnr_value, ssim_value
 
-    # -----------------------
-    # Compute PSNR:
-    # -----------------------
-    # Use a provided maximum value (for example, for normalized data, MAX=1). 
-    #MAX_val = getattr(args, 'max_value', 1.0)
-    # Avoid division by zero.
-
-    #compute max feature value in reconstructed inputs and X_original
-    MAX_val = max(reconstructed_inputs.max(), X_original.max())
-
+    # 5) PSNR
     if mse == 0:
         psnr_value = float('inf')
     else:
-        psnr_value = 10 * math.log10((MAX_val ** 2) / mse)
-    
+        psnr_value = 10 * math.log10((data_range ** 2) / mse)
     print(f"PSNR = {psnr_value:.4f} dB")
-    
-    # -----------------------
-    # Compute SSIM for tabular data:
-    # -----------------------
-    # For tabular data, we treat the 2D array as an "image" with no channels.
+
+    # 6) SSIM
     original_np = X_original.detach().cpu().numpy()
     reconstructed_np = reconstructed_inputs.detach().cpu().numpy()
-    
-    # Since tabular data is not an image, we set multichannel=False.
-    ssim_value = ssim(original_np, reconstructed_np, data_range=MAX_val, multichannel=False)
+    ssim_value = ssim(
+        original_np,
+        reconstructed_np,
+        data_range=data_range,
+        multichannel=False
+    )
     print(f"SSIM = {ssim_value:.4f}")
-    
 
     return mse, psnr_value, ssim_value
-
 
 
 
