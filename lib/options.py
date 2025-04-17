@@ -42,6 +42,8 @@ def args_parser():
     parser.add_argument('--max_pool', type=str, default='True',
                         help="Whether use max pooling rather than \
                         strided convolutions")
+    parser.add_argument('--aggregated', type=str, default='all_layers',
+                        help="aggregated layers")   
 
     # other arguments
     parser.add_argument('--data_dir', type=str, default='../data/', help="directory of dataset")
@@ -62,6 +64,8 @@ def args_parser():
     parser.add_argument('--stopping_rounds', type=int, default=10,
                         help='rounds of early stopping')
     parser.add_argument('--verbose', type=int, default=1, help='verbose')
+    #parser.add_argument('--seed', type=int, default=42, help='random seed')
+    #parser.add_argument('--seed', type=int, default=1111, help='random seed')
     parser.add_argument('--seed', type=int, default=1234, help='random seed')
     parser.add_argument('--test_ep', type=int, default=10, help="num of test episodes for evaluation")
 

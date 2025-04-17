@@ -883,10 +883,24 @@ class LocalUpdate(object):
                 # loss1: cross-entropy loss, loss2: proto distance loss
                 model.zero_grad()
                 log_probs, protos = model(images)
-                proximal_term = 0.0
+                if self.args.aggregated == 'mapping_layers':
+                    proximal_term = 0.0
 
-                for w, w_t in zip(model.parameters(), global_model.parameters()):
-                    proximal_term += (w - w_t).norm(2)
+                    # Create dictionaries for global model parameters for easier access.
+                    global_params = dict(global_model.named_parameters())
+
+                    # Iterate over model parameters with their names
+                    for name, param in model.named_parameters():
+                        # Only compute the proximal term for the specified keys.
+                        if any(layer_key in name for layer_key in ['conv1', 'conv2', 'dense1']):
+                            # It is assumed that the corresponding global parameter exists with the same name.
+                            global_param = global_params[name]
+                            proximal_term += (param - global_param).norm(2)
+                else:
+                    proximal_term = 0.0
+
+                    for w, w_t in zip(model.parameters(), global_model.parameters()):
+                        proximal_term += (w - w_t).norm(2)
 
                 # LOSS
                 loss_prox = (self.mu / 2) * proximal_term

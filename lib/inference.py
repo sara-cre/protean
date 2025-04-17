@@ -6,7 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
 from tqdm import tqdm
-
+import math
+from skimage.metrics import structural_similarity as ssim
 
 
 
@@ -284,7 +285,35 @@ def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label,idx
     mse = mean_squared_error(X_original, reconstructed_inputs)
 
     print(f"Class {label}: Squared L2 Distance = {squared_l2_distance.item():.4f}", f"MSE = {mse:.4f}")
-    return mse
+
+    # -----------------------
+    # Compute PSNR:
+    # -----------------------
+    # Use a provided maximum value (for example, for normalized data, MAX=1). 
+    MAX_val = getattr(args, 'max_value', 1.0)
+    # Avoid division by zero.
+    if mse == 0:
+        psnr_value = float('inf')
+    else:
+        psnr_value = 10 * math.log10((MAX_val ** 2) / mse)
+    
+    print(f"PSNR = {psnr_value:.4f} dB")
+    
+    # -----------------------
+    # Compute SSIM for tabular data:
+    # -----------------------
+    # For tabular data, we treat the 2D array as an "image" with no channels.
+    original_np = X_original.detach().cpu().numpy()
+    reconstructed_np = reconstructed_inputs.detach().cpu().numpy()
+    
+    # Since tabular data is not an image, we set multichannel=False.
+    ssim_value = ssim(original_np, reconstructed_np, data_range=MAX_val, multichannel=False)
+    print(f"SSIM = {ssim_value:.4f}")
+    
+
+    return mse, psnr_value, ssim_value
+
+
 
 
 def evaluate_reconstruction__(args, reconstructed_inputs, train_dataset, label):
