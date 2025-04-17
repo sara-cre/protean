@@ -290,8 +290,12 @@ def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label,idx
     # Compute PSNR:
     # -----------------------
     # Use a provided maximum value (for example, for normalized data, MAX=1). 
-    MAX_val = getattr(args, 'max_value', 1.0)
+    #MAX_val = getattr(args, 'max_value', 1.0)
     # Avoid division by zero.
+
+    #compute max feature value in reconstructed inputs and X_original
+    MAX_val = max(reconstructed_inputs.max(), X_original.max())
+
     if mse == 0:
         psnr_value = float('inf')
     else:
