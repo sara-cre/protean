@@ -21,6 +21,84 @@ def reconstruct_input(args, projection_model, C_i,
                      lambda_l2=1e-4, lambda_l1=1e-4,
                      min_feature_value=None, max_feature_value=None):
     
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    import numpy as np
+    from tqdm import tqdm
+
+    projection_model.eval()
+    for param in projection_model.parameters():
+        param.requires_grad = False
+    
+    input_shape = args.num_features
+    device = args.device
+
+    if min_feature_value is None or max_feature_value is None:
+        X_hat = torch.randn(input_shape, requires_grad=True, device=device)
+    else:
+        min_vals_np = min_feature_value.detach().cpu().numpy()
+        max_vals_np = max_feature_value.detach().cpu().numpy()
+        random_np = np.random.uniform(low=min_vals_np, high=max_vals_np)
+        X_random = torch.from_numpy(random_np).float().to(device)
+        X_hat = X_random.clone().requires_grad_(True)
+
+    # ✅ Change optimizer to AdamW
+    optimizer = optim.AdamW([X_hat], lr=learning_rate)
+
+    mse_loss = nn.MSELoss()
+    C_i = C_i.detach().to(device)
+
+    loss_history = []
+
+    for iteration in tqdm(range(num_iterations), desc="Reconstructing"):
+        optimizer.zero_grad()
+
+        _, protos = projection_model(X_hat.unsqueeze(0))
+        protos = protos.squeeze(0)
+
+        assert protos.shape == C_i.shape
+        assert protos.device == X_hat.device
+
+        loss_mse = mse_loss(protos, C_i)
+        loss_l2 = torch.norm(X_hat, 2)
+        loss_l1 = torch.norm(X_hat, 1)
+
+        # ✅ Combine with regularization terms
+        loss = loss_mse + lambda_l2 * loss_l2 + lambda_l1 * loss_l1
+
+        loss.backward()
+
+        # ✅ Optional: log gradient norms
+        if iteration % 50 == 0:
+            print(f"Iteration {iteration}: MSE={loss_mse.item():.4f} | L2={loss_l2.item():.4f} | L1={loss_l1.item():.4f}")
+            print(f"Gradient norm: {X_hat.grad.norm().item():.4f}")
+
+        optimizer.step()
+
+        # ✅ Clamp each iteration if feature range provided
+        if min_feature_value is not None and max_feature_value is not None:
+            with torch.no_grad():
+                X_hat.clamp_(min=min_feature_value, max=max_feature_value)
+
+        loss_history.append(loss_mse.item())
+
+    # Optional: plot
+    # import matplotlib.pyplot as plt
+    # plt.plot(loss_history)
+    # plt.xlabel("Iteration")
+    # plt.ylabel("MSE Loss")
+    # plt.title("Reconstruction Loss")
+    # plt.show()
+
+    return X_hat.detach()
+
+
+def reconstruct_input_(args, projection_model, C_i, 
+                     learning_rate=0.1, num_iterations=500, 
+                     lambda_l2=1e-4, lambda_l1=1e-4,
+                     min_feature_value=None, max_feature_value=None):
+    
     # 1. Set projection_model to evaluation mode
     projection_model.eval()
     
@@ -31,7 +109,28 @@ def reconstruct_input(args, projection_model, C_i,
     # 3. Initialize X_hat with requires_grad=True to optimize
     input_shape = args.num_features
     device = args.device
-    X_hat = torch.randn(input_shape, requires_grad=True, device=device)
+    if min_feature_value is None and max_feature_value is None:
+        # Generate random values in the range of the original data
+        X_hat = torch.randn(input_shape, requires_grad=True, device=device)
+    else:
+        # Generate random values within the specified min and max feature values
+        # Ensure min_feature_value and max_feature_value are tensors
+        min_vals_np = min_feature_value.detach().cpu().numpy()
+        max_vals_np = max_feature_value.detach().cpu().numpy()
+        
+        # Generate a single random sample using numpy.uniform for each feature
+        # np.random.uniform can accept arrays for low and high to generate element-wise
+        random_np = np.random.uniform(low=min_vals_np, high=max_vals_np)
+        
+        # Convert the NumPy array back to a PyTorch tensor
+        X_random = torch.from_numpy(random_np).float().to(device)
+        X_hat = X_random.clone().requires_grad_(True)
+
+        
+        # Generate random values within the specified range
+        #X_hat = torch.randn(input_shape, requires_grad=True, device=device)
+    #X_hat = torch.randn(input_shape, requires_grad=True, device=device)
+    #X_hat = torch.randn(input_shape, min_feature_value, max_feature_value, requires_grad=True, device=device)
     
     # 4. Define optimizer
     optimizer = optim.Adam([X_hat], lr=learning_rate)
@@ -44,6 +143,8 @@ def reconstruct_input(args, projection_model, C_i,
     
     # Optional: Initialize a list to store loss history for monitoring
     loss_history = []
+
+    print("*****************Xhat reconstruction min max feature values*************", min_feature_value, max_feature_value)
     
     for iteration in tqdm(range(num_iterations), desc="Reconstructing"):
         optimizer.zero_grad()
@@ -83,11 +184,17 @@ def reconstruct_input(args, projection_model, C_i,
         
         # 12. Optimizer step
         optimizer.step()
+
+        
         
         # 13. Optionally clamp the values to valid range based on feature constraints
         if min_feature_value is not None and max_feature_value is not None:
             with torch.no_grad():
                 X_hat.clamp_(min_feature_value, max_feature_value)
+                if min_feature_value is not None and max_feature_value is not None:
+                    with torch.no_grad():
+                        # This works element‑wise when min/max are Tensors
+                        X_hat.clamp_(min=min_feature_value, max=max_feature_value)
         
         # 14. Record the loss
         loss_history.append(loss_mse.item())
@@ -103,6 +210,13 @@ def reconstruct_input(args, projection_model, C_i,
     # plt.ylabel('MSE Loss')
     # plt.title('Reconstruction Loss Over Iterations')
     # plt.show()
+    # if min_feature_value is not None and max_feature_value is not None:
+    #     with torch.no_grad():
+    #         X_hat.clamp_(min_feature_value, max_feature_value)
+    #         if min_feature_value is not None and max_feature_value is not None:
+    #             with torch.no_grad():
+    #                 # This works element‑wise when min/max are Tensors
+    #                 X_hat.clamp_(min=min_feature_value, max=max_feature_value)
     
     return X_hat.detach()
 
@@ -316,7 +430,41 @@ def evaluate_reconstruction(args, reconstructed_inputs, train_dataset, label, id
     )
     print(f"SSIM = {ssim_value:.4f}")
 
-    return mse, psnr_value, ssim_value
+    # 4) Adapted PSNR
+    #   a) per-feature MSE
+    #mse_per_feat = torch.mean((reconstructed_inputs - X_original) ** 2, dim=0)  # [n_features]
+    mse_per_feat = (reconstructed_inputs - X_original).pow(2)
+    print(f"MSE per feature: {mse_per_feat}")
+
+    # b) per‑feature dynamic range from the class samples
+    X_train  = torch.stack([x for x, _ in train_subset])  #  = torch.stack([data for data, lbl in train_subset if lbl.item() == label])
+    Xmin_per_feat = X_train.min(dim=0).values       # [n_features]
+    Xmax_per_feat = X_train.max(dim=0).values       # [n_features]
+    range_per_feat = Xmax_per_feat - Xmin_per_feat  # [n_features]
+    range_per_feat = torch.where(range_per_feat == 0,
+                        torch.ones_like(range_per_feat),
+                        range_per_feat)
+    print(f"Range per feature: {range_per_feat}")
+
+
+    #   c) per-feature PSNR (in dB), adding eps to avoid log(0)
+    eps = 1e-8
+    psnr_per_feat = 10.0 * torch.log10((range_per_feat ** 2) / (mse_per_feat))
+
+    #   d) average PSNR over all features
+    #psnr = psnr_per_feat.mean().item()
+    mask = mse_per_feat > 0
+    psnr_valid = psnr_per_feat[mask]
+    psnr_mean = psnr_valid.mean().item() if mask.any() else float('inf')
+    psnr = psnr_mean
+
+    # 5) Reporting
+    print(f"Class {label}: Squared L2 = {squared_l2_distance.item():.4f}, "
+          f"MSE = {mse:.4f}, PSNR = {psnr:.2f} dB")
+
+    print("**************evaluate_reconstruction feature min max values***************", Xmin_per_feat, Xmax_per_feat)
+
+    return mse, psnr, ssim_value
 
 
 
@@ -456,8 +604,42 @@ def compute_baseline_mse(args, train_dataset, label, idxs):
     
     min_vals, max_vals = get_feature_range(train_dataset, idxs)
     X_random = generate_random_guess(min_vals, max_vals, args.device)
+
+    print("**************compute_baseline_mse feature min max values***************", min_vals, max_vals)
     
     mse = F.mse_loss(X_random, X_original).item()
     print(f"Baseline MSE (Random Guess) for Class {label}: {mse:.4f}")
-    return mse
+
+    #psnr per feature
+    mse_per_feat = (X_random - X_original).pow(2)
+    print(f"MSE per feature: {mse_per_feat}")
+    
+
+    # b) per‑feature dynamic range from the class samples
+    X_train  = torch.stack([x for x, _ in train_subset])  #  = torch.stack([data for data, lbl in train_subset if lbl.item() == label])
+    Xmin_per_feat = X_train.min(dim=0).values       # [n_features]
+    Xmax_per_feat = X_train.max(dim=0).values       # [n_features]
+    range_per_feat = Xmax_per_feat - Xmin_per_feat  # [n_features]
+    range_per_feat = torch.where(range_per_feat == 0,
+                        torch.ones_like(range_per_feat),
+                        range_per_feat)
+    print(f"Range per feature: {range_per_feat}")
+
+
+    #   c) per-feature PSNR (in dB), adding eps to avoid log(0)
+    eps = 1e-8
+    psnr_per_feat = 10.0 * torch.log10((range_per_feat ** 2) / (mse_per_feat))
+
+    #   d) average PSNR over all features
+    #psnr = psnr_per_feat.mean().item()
+    mask = mse_per_feat > 0
+    psnr_valid = psnr_per_feat[mask]
+    psnr_mean = psnr_valid.mean().item() if mask.any() else float('inf')
+    psnr = psnr_mean
+
+    # 5) Reporting
+    print(f"Class {label}:  "
+          f"MSE = {mse:.4f}, PSNR = {psnr:.2f} dB")
+
+    return mse, psnr
 

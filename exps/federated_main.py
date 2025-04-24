@@ -24,6 +24,8 @@ mod_dir = (Path(__file__).parent / ".." / "lib" / "models").resolve()
 if str(mod_dir) not in sys.path:
     sys.path.insert(0, str(mod_dir))
 
+from update import DatasetSplit
+
 from resnet import resnet18
 from options import args_parser
 from update import LocalUpdate, save_protos, LocalTest, test_inference_new_het_lt, test_inference_new_het, test_inference, test_inference_new_het_by_attack, test_inference_new_het_lt_new, test_inference_new_het_lt_new_op, test_inference_metrics, test_inference_by_attack_server
@@ -882,7 +884,16 @@ def apply_dp_to_protos(args, protos):
         # Clip the noisy prototype element-wise so that its values lie within
         # the original prototype's min and max (i.e., its normal range).
         #noisy_proto = torch.clamp(noisy_proto, min=lower_bound.item(), max=upper_bound.item())
-        noisy_proto = torch.clamp(noisy_proto, min=0, max=args.clip_threshold)
+        #noisy_proto = torch.clamp(noisy_proto, min=0, max=args.clip_threshold)
+
+        #print diff between noisy_proto and proto
+        print(f"\n-----------------------Class--------------- {cls}")
+        print(f"Original Prototype:\n{proto}")
+        print(f"Noise:\n{noise}")
+        print(f"Noisy Prototype:\n{noisy_proto}")
+        print(f"Difference (Noisy - Original):\n{noisy_proto - proto}")  # or just 'noise'
+
+        
 
         dp_protos[cls] = noisy_proto
 
@@ -982,6 +993,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     psnr_file = file_folder + 'psnr_' + file_ext + '.txt'
     ssim_file = file_folder + 'ssim_' + file_ext + '.txt'
     baseline_loss_file = file_folder + 'baseline_loss_' + file_ext + '.txt'
+    baseline_psnr_file = file_folder + 'baseline_psnr_' + file_ext + '.txt'
     outlier_file = file_folder + 'outlier_' + args.outlier_type + '_eliminated_' + str(args.eliminate_outlier) +'_attacker' + str(args.num_attacker) + '_' + file_ext + '.txt'
     global_protos = [] 
     idxs_users = np.arange(args.num_users)
@@ -1010,6 +1022,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     local_weights_prev = []
     acc_byclient_byclass = []
     baseline_loss = []
+    baseline_psnr = []
     acc_byround_byclass = []
     buffer_round = 0
     for round in tqdm(range(args.rounds)):
@@ -1056,12 +1069,20 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 psnr_client = []
                 ssim_client = []
                 baseline_loss_client = []
+                baseline_psnr_client = []
                 input_shape = (args.num_features,) 
+                idxs = user_groups[idx]
+
                 
                 for (label,C_i) in local_protos[idx].items():
+                    subset   = DatasetSplit(train_dataset, idxs)
+                    data     = torch.stack([x for x, _ in subset])
+                    min_feature_value = data.min(dim=0).values 
+                    max_feature_value = data.max(dim=0).values 
                     X_reconstructed = reconstruct_input(args, projection_model, C_i,  
-                                        learning_rate=0.01, num_iterations=1000, 
-                                        lambda_l2=1e-4, lambda_l1=1e-4)
+                                        learning_rate=0.1, num_iterations=1000, 
+                                        lambda_l2=1e-4, lambda_l1=1e-4,
+                                        min_feature_value=min_feature_value, max_feature_value=max_feature_value)
                 
                     # Move to CPU and convert to NumPy for analysis
                     X_reconstructed_np = X_reconstructed.cpu().numpy()
@@ -1070,17 +1091,19 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
 
                     # Evaluate the attack
                     #similarity_metrics = evaluate_reconstruction(X_reconstructed, sampled_original_data[label])
-                    mse_baseline = compute_baseline_mse(args, train_dataset, label, user_groups[idx])
+                    mse_baseline, psnr_baseline = compute_baseline_mse(args, train_dataset, label, user_groups[idx])
                     distance, psnr, ssim = evaluate_reconstruction(args, X_reconstructed, train_dataset, label,user_groups[idx])
                     reconstruct_loss_client.append(distance)
                     psnr_client.append(psnr)
                     ssim_client.append(ssim)
                     baseline_loss_client.append(mse_baseline)
+                    baseline_psnr_client.append(psnr_baseline)
                 
                 reconstruct_loss.append(reconstruct_loss_client)
                 psnr_all.append(psnr_client)
                 ssim_all.append(ssim_client)
                 baseline_loss.append(baseline_loss_client)
+                baseline_psnr.append(baseline_psnr_client)
                     
         with open(reconstruction_loss_file, 'a') as file:
             file.write(str(reconstruct_loss))
@@ -1094,6 +1117,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         
         with open(baseline_loss_file, 'a') as file:
             file.write(str(baseline_loss))
+            file.write('\n')
+
+        with open(baseline_psnr_file, 'a') as file:
+            file.write(str(baseline_psnr))
             file.write('\n')
 
         """# Aggregate mapping layers
@@ -1909,9 +1936,13 @@ if __name__ == '__main__':
             for label, count in user_classes.items():
                 f.write(f"  Class {label}: {count} instances\n")
             f.write("\n")"""
-    for var in [10.0,1.0,0.1,0.01,0.001]:  
+    """for var in [10.0,1.0,0.1,0.01,0.001]:  
         args.diff_privacy = True   
-        args.variance = var   
+        args.variance = var   """
+    for var in [900]:#[ 10, 50, 100, 500, 1000, 5000, 10000, 50000]:  
+        args.diff_privacy = True  
+        #args.diff_privacy = False 
+        args.variance = var 
         for alpha in [0.75,0.5,0.25]:#,0.5,0.25]:#, 0.01, 0.001]:#, 0.1, 0.05, 0.01, 0.005]:# [ 0.05, 0.01, 0.005]:#, 0.25, 0.1]:#[0.5, 0.25, 0.1, 0.05, 0.01, 0.005]:#[0.75, #0.75, 0.5, 0.25, 0.1,
             args.alpha = alpha
             args.alr_flipped = "False"
@@ -1961,7 +1992,7 @@ if __name__ == '__main__':
                     for attackers in [2,6]:
                         args.num_attackers = attackers"""
             #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-            for alg in ['beforefl','fedproto']: #['beforefl','fedavg','fedprox','fedproto']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+            for alg in ['fedproto']: #['beforefl','fedavg','fedprox','fedproto']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
                 args.alg = alg
                 classic_eval = True
                 args.attack_type = 'none'
@@ -1986,6 +2017,7 @@ if __name__ == '__main__':
 
 
                 print('*****************************Running algorithm********************************: ', args.alg)
+                print("diff_privacy: ", args.diff_privacy)
                 if args.alg == 'fedavg' or args.alg == 'fedprox':
                     print('Running federated averaging')
                     if args.dataset == 'cicids2017':

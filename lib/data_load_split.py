@@ -531,6 +531,9 @@ def load_data_x_iiotid(args):
         #Y = label_flipping_untargeted(Y, args.flip_ratio)
     # Split the dataset 
     X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42) 
+
+    feature_names = X_train.columns.tolist()
+    print("Feature names:", feature_names)
     """if args.semi > 0:
         unlabeled_indices = np.random.choice(len(Y_train), size=int(len(Y_train) * args.semi), replace=False)
         Y_train[unlabeled_indices] = -1"""
