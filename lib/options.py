@@ -64,9 +64,9 @@ def args_parser():
     parser.add_argument('--stopping_rounds', type=int, default=10,
                         help='rounds of early stopping')
     parser.add_argument('--verbose', type=int, default=1, help='verbose')
-    #parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
     #parser.add_argument('--seed', type=int, default=1111, help='random seed')
-    parser.add_argument('--seed', type=int, default=1234, help='random seed')
+    #parser.add_argument('--seed', type=int, default=1234, help='random seed')
     parser.add_argument('--test_ep', type=int, default=10, help="num of test episodes for evaluation")
 
     parser.add_argument('--data_percent', type=float, default=1.0, help="percentage of data used")
@@ -108,7 +108,7 @@ def args_parser():
     parser.add_argument('--diff_privacy', type=bool, default=False, help='differential privacy')
     parser.add_argument('--epsilon', type=float, default=5, help='differential privacy epsilon')
     parser.add_argument('--delta', type=float, default=1e-3, help='differential privacy delta')
-    parser.add_argument('--clip_threshold', type=float, default=15.0, help='Clipping threshold for prototypes')
+    parser.add_argument('--clip_threshold', type=float, default=100.0, help='Clipping threshold for prototypes')
     parser.add_argument('--variance', type=float, default=0.1, help='noise variance for differential privacy')
 
     parser.add_argument('--mu', type=float, default=0.1, help='mu for fedprox')

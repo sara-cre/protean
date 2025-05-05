@@ -71,7 +71,7 @@ def plot_metrics(acc_file_name, f1_file_name, macro_acc_file_name, macro_f1_file
     #plt.legend(args.alg)  
     plt.legend(loc='lower right', fontsize=20)
     plt.grid(True)
-    alg = 'Moon-IDS'
+    alg = 'PROTEAN'
     plt.title(alg, fontsize=40, pad =20)
     #plt.show()
     # creating the output file
