@@ -649,6 +649,14 @@ class LocalUpdate(object):
         # Set mode to train model
         mu = 1.0
         global_model = copy.deepcopy(model)
+        global_model.eval()                                 # <-- fixes Dropout/BN behavior
+        for p in global_model.parameters(): 
+            p.requires_grad = False                         # (optional but safe)
+
+        previous_models = previous_models.to(self.device)
+        previous_models.eval()                              # <-- same reason as above
+        for p in previous_models.parameters():
+            p.requires_grad = False  
         model.train()
         epoch_loss = {'total':[],'1':[], '2':[], '3':[]}
         cos=torch.nn.CosineSimilarity(dim=-1)

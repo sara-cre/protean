@@ -187,6 +187,7 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
     if not os.path.exists(file_folder):
         os.makedirs(file_folder)
     
+    
     file_ext = 'data_' + args.dataset + '_alpha' + str(args.alpha) + '_alg' + args.alg+'_num_users' + str(args.num_users)# + '_timestamp' + str(timestamp)
     # Open the file using the created file name
     accuracies_file = open(file_folder + 'acc_' + file_ext + '.txt', 'w')
@@ -196,6 +197,10 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
     macro_f1_file = open(file_folder + 'macro_f1_' + file_ext + '.txt', 'w')
     precision_file = open(file_folder + 'precision_' + file_ext + '.txt', 'w')
     recall_file = open(file_folder + 'recall_' + file_ext + '.txt', 'w')
+    time_file = open(file_folder + 'time_' + file_ext + '.txt', 'w')
+    all_client_times = []   # list of lists: per-round per-client times
+    round_times      = []   # total time for each round
+    train_start      = time.time()
     #accuracies_file = open(filename, 'w')
     #recall_file = open(f'../save/recall_FL{args.dataset}_{args.ways}w{args.shots}s{args.stdev}_alpha{args.alpha}e_{args.num_users}u{timestamp}.txt', 'w')
     
@@ -243,7 +248,11 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
     
 
     for round in tqdm(range(args.rounds)):
+        round_start = time.time()
         local_weights,  local_losses, local_accs = [], [], []
+
+        # measure each client’s update time
+        client_times = []
         
         print(f'\n | Global Training Round : {round + 1} |\n')
         if args.alg == 'scaffold':
@@ -253,6 +262,7 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
                 delta_x[ci] = 0.0
 
         for idx in idxs_users:
+            ct_start = time.time()
             local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
             if args.alg == 'scaffold':
 
@@ -292,12 +302,14 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
                 local_model_list[idx].load_state_dict(copy.deepcopy(w))
             
 
-            
+            client_times.append(time.time() - ct_start)
+
             local_losses.append(copy.deepcopy(loss))
             local_accs.append(copy.deepcopy(acc))
 
                 
-            
+        all_client_times.append(client_times)
+        round_times.append(time.time() - round_start)  
         if args.alg == 'scaffold':
             #update the delta C (line 16)
             for w in delta_c:
@@ -373,6 +385,33 @@ def Federated_Learning(args, train_dataset, test_dataset, user_groups, user_grou
             acc, loss = test_inference_by_attack_server(args, global_model, test_dataset, class_)
             print(f'Class {class_} acc: {acc}')"""
 
+    total_time = time.time() - train_start
+
+    # … your existing saves & plots …
+
+    # write out timing summary
+    times_file = os.path.join(file_folder, 'train_times.txt')
+    with open(times_file, 'w') as f:
+        f.write(f"Total FL time          : {total_time:.2f} s\n")
+        avg_round = sum(round_times) / len(round_times)
+        f.write(f"Average per-round time : {avg_round:.2f} s\n\n")
+
+        f.write("Per-round breakdown (seconds):\n")
+        for r, rt in enumerate(round_times, 1):
+            f.write(f" Round {r:02d}: {rt:.2f} s\n")
+
+        f.write("\nPer-client times within each round:\n")
+        for r, ct_list in enumerate(all_client_times, 1):
+            times_str = ", ".join(f"{t:.2f}" for t in ct_list)
+            f.write(f" Round {r:02d}: [{times_str}]\n")
+        f.write("\nAverage per-client time: ")
+        avg_client_time = sum(sum(all_client_times, [])) / (len(all_client_times) * args.num_users)
+        f.write(f"{avg_client_time:.2f} s\n")
+        
+
+    
+
+    print(f"Saved training times to {times_file}")
     acc_byclient_byclass = []
     for user in range(args.num_users):
         acc_byclass = []
@@ -1009,6 +1048,9 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     acc_macros = []
     fpr_scores = []
     eliminated_results = []
+    all_client_times = []   # list of lists: per-round per-client times
+    round_times      = []   # total time for each round
+    train_start      = time.time()
     
     model_buffer_s = 1
     if args.dataset == 'cicids2017':
@@ -1026,6 +1068,11 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
     acc_byround_byclass = []
     buffer_round = 0
     for round in tqdm(range(args.rounds)):
+        round_start = time.time()
+        local_weights, local_losses, local_accs = [], [], []
+
+        # measure each client’s update time
+        client_times = []
         local_mapping_weights, local_weights, local_losses, local_protos = [], [], [], {}
         print(f'\n | Global Training Round : {round + 1} |\n')
 
@@ -1034,6 +1081,7 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         psnr_all = []
         ssim_all = []
         for idx in idxs_users:
+            ct_start = time.time()
             local_model = LocalUpdate(args=args, dataset=train_dataset,idx = idx, idxs=user_groups[idx], global_round=round)
             
             
@@ -1044,6 +1092,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
             else:
                 
                 w, loss, acc, protos = local_model.update_weights_het_prox_weighted(args, idx, global_protos, model=copy.deepcopy(local_model_list[idx]), global_round=round)
+            client_times.append(time.time() - ct_start)
+
+            all_client_times.append(client_times)
+            round_times.append(time.time() - round_start)
 
             agg_protos = agg_func(protos)
             
@@ -1104,7 +1156,10 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
                 ssim_all.append(ssim_client)
                 baseline_loss.append(baseline_loss_client)
                 baseline_psnr.append(baseline_psnr_client)
-                    
+        all_client_times.append(client_times)
+        round_times.append(time.time() - round_start)
+
+            
         with open(reconstruction_loss_file, 'a') as file:
             file.write(str(reconstruct_loss))
             file.write('\n')
@@ -1338,6 +1393,28 @@ def FedProto_taskheter(args, train_dataset, test_dataset, user_groups, user_grou
         acc, loss = test_inference_by_attack_server_proto(args, global_model, test_dataset, class_)
         acc_byclass.append(acc)"""
 
+    total_time = time.time() - train_start
+
+    # … your existing saves & plots …
+
+    # write out timing summary
+    times_file = os.path.join(file_folder, 'train_times.txt')
+    with open(times_file, 'w') as f:
+        f.write(f"Total FL time          : {total_time:.2f} s\n")
+        avg_round = sum(round_times) / len(round_times)
+        f.write(f"Average per-round time : {avg_round:.2f} s\n\n")
+
+        f.write("Per-round breakdown (seconds):\n")
+        for r, rt in enumerate(round_times, 1):
+            f.write(f" Round {r:02d}: {rt:.2f} s\n")
+
+        f.write("\nPer-client times within each round:\n")
+        for r, ct_list in enumerate(all_client_times, 1):
+            times_str = ", ".join(f"{t:.2f}" for t in ct_list)
+            f.write(f" Round {r:02d}: [{times_str}]\n")
+
+    print(f"Saved training times to {times_file}")
+    
     file_acc_byclient_byclass = file_folder + 'acc_byclient_byclass_' + file_ext + '.txt'
     with open(file_acc_byclient_byclass, 'w') as file:
         file.write(str(acc_byclient_byclass))
@@ -1995,7 +2072,7 @@ if __name__ == '__main__':
                 for attackers in [2,6]:
                     args.num_attackers = attackers"""
         #for alg in ['fedproto']:#['beforefl','fedavg', 'fedprox', 'scaffold']:
-        for alg in ['beforefl','fedproto']: #['beforefl','fedavg','fedprox','fedproto']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
+        for alg in ['moon']:# ['beforefl','fedavg','fedprox','fedproto','moon']: #['beforefl','fedavg','fedprox','fedproto']:#['fedproto']:#:#, 'fedprox']:##, 'krum','median','trimmed_mean','fedavg', 'fedprox']:
             args.alg = alg
             classic_eval = True
             args.attack_type = 'none'
@@ -2032,7 +2109,7 @@ if __name__ == '__main__':
                     global_model = CustomCNN(args)
                 Federated_Learning(args, train_dataset, test_dataset, user_groups, user_groups_lt, global_model, classes_list)
             elif args.alg == 'fedproto' or args.alg == 'moon':
-                aggregated = 'none' #'all_layers' #'none'#'mapping_layers' #
+                aggregated =  'all_layers' #'none'#'mapping_layers' #
                 args.aggregated = aggregated
                 if args.dataset == 'cicids2017':
                     local_model_list = [DenseModel(args) for i in range(args.num_users)]
