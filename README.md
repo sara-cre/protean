@@ -27,7 +27,7 @@ Data is partitioned across clients using a **Dirichlet distribution** (controlle
 
 ## Running Experiments
 
-All experiments are launched from `exps/`.
+All experiments are launched from `exps/` (run from the project root). The commands below are illustrative examples — adjust dataset, number of users, rounds, alpha, and other parameters to match your setup.
 
 ### Basic federated run (Dirichlet non-IID)
 

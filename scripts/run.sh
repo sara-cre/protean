@@ -1,9 +1,20 @@
 #!/bin/bash
-# bash ./scripts/baseline.sh
-echo script name: $0
+# Run from project root: bash scripts/run.sh
 
-python exps/federated_main.py --mode task_heter --dataset mnist --num_classes 10 --num_users 20 --ways 5 --stdev 2 --rounds 200
+echo "Script: $0"
 
-python exps/federated_main.py --mode model_heter --dataset mnist --num_classes 10 --num_users 20 --ways 5 --stdev 2 --rounds 200
+# Basic federated run — X-IIoTID, Dirichlet non-IID (alpha=0.25)
+python exps/federated_main.py --dataset xiiotid \
+  --num_users 10 --rounds 100 --alpha 0.25 \
+  --dirichlet 1 --train_ep 3 --local_bs 64 --ld 1
 
-python exps/federated_main.py --mode task_heter --dataset cifar10 --num_classes 10 --rounds 30 --train_ep 8 --ways 4 --stdev 1
+# Basic federated run — 5G-NIDD, Dirichlet non-IID (alpha=0.25)
+python exps/federated_main.py --dataset 5gnidd \
+  --num_users 10 --rounds 100 --alpha 0.25 \
+  --dirichlet 1 --train_ep 3 --local_bs 64 --ld 1
+
+# With differential privacy — X-IIoTID
+python exps/federated_main.py --dataset xiiotid \
+  --num_users 10 --rounds 100 --alpha 0.25 \
+  --dirichlet 1 --train_ep 3 --local_bs 64 --ld 1 \
+  --dp True --epsilon 5 --delta 1e-3 --clip_threshold 100.0
